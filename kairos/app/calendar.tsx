@@ -1,0 +1,676 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+import type { ReactNode } from "react";
+import { signIn, signOut } from "next-auth/react";
+
+/* ------------------------------------------------------------------ types */
+type Account = { email: string; name?: string | null; picture?: string | null; color?: string | null };
+type Cal = { account: string; id: string; summary: string | null; color: string | null; primary: boolean };
+type Attendee = { email?: string; name?: string; response?: string; organizer?: boolean; self?: boolean };
+type Ev = {
+  account: string; id: string; calendarId: string; color: string | null; summary: string;
+  location?: string | null; description?: string | null; allDay: boolean;
+  start: string; end: string; attendees: Attendee[]; meet?: string | null;
+  attachments: { title?: string; url?: string }[]; htmlLink?: string | null;
+  organizer?: string | null; recurring: boolean;
+};
+type Task = {
+  account: string; tasklist: string; id: string; title: string; notes?: string | null;
+  status: string; due?: string | null; dueTime?: string | null; parent?: string | null;
+};
+type ListMeta = { account: string; id: string; title: string | null };
+
+type View = "month" | "week" | "day";
+
+type Modal =
+  | { kind: "detail"; ev: Ev }
+  | { kind: "event"; isNew: boolean; ev?: Ev; draft: EventDraft }
+  | { kind: "task"; isNew: boolean; draft: TaskDraft }
+  | { kind: "accounts" }
+  | null;
+
+type EventDraft = {
+  account: string; calendarId: string; summary: string; allDay: boolean;
+  start: string; end: string; location: string; description: string;
+};
+type TaskDraft = {
+  account: string; tasklist: string; id?: string; title: string;
+  due: string; dueTime: string; notes: string; done: boolean;
+};
+
+/* ------------------------------------------------------------ date helpers */
+const HOUR_H = 44, HOURS = 24;
+const WD = ["日", "月", "火", "水", "木", "金", "土"];
+const WD_MON = ["月", "火", "水", "木", "金", "土", "日"];
+const pad = (n: number) => String(n).padStart(2, "0");
+const startOfDay = (d: Date) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+const startOfWeek = (d: Date) => { const x = startOfDay(d); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; };
+const addDays = (d: Date, n: number) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+const sameDay = (a: Date, b: Date) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+const ymd = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const localInput = (d: Date) => `${ymd(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+function toRFC3339(d: Date) {
+  const off = -d.getTimezoneOffset(), s = off >= 0 ? "+" : "-";
+  return `${ymd(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}:00${s}${pad(Math.abs(off) / 60 | 0)}:${pad(Math.abs(off) % 60)}`;
+}
+const enc = encodeURIComponent;
+const taskDueDate = (t: Task) => (t.due ? new Date(`${t.due.slice(0, 10)}T00:00:00`) : null);
+const minsOf = (hhmm: string) => { const [h, m] = hhmm.split(":").map(Number); return h * 60 + (m || 0); };
+
+function viewDays(view: View, anchor: Date): Date[] {
+  if (view === "day") return [startOfDay(anchor)];
+  const s = startOfWeek(anchor);
+  return Array.from({ length: 7 }, (_, i) => addDays(s, i));
+}
+function rangeFor(view: View, anchor: Date): [Date, Date] {
+  if (view === "month") {
+    const gs = startOfWeek(new Date(anchor.getFullYear(), anchor.getMonth(), 1));
+    return [gs, addDays(gs, 42)];
+  }
+  const ds = viewDays(view, anchor);
+  return [startOfDay(ds[0]), addDays(startOfDay(ds[ds.length - 1]), 1)];
+}
+
+async function api(method: string, url: string, body?: unknown) {
+  const r = await fetch(url, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (r.status === 401) throw { unauth: true };
+  if (!r.ok) throw new Error(await r.text());
+  return r.status === 204 ? null : r.json();
+}
+
+/* =================================================================== app */
+export default function Calendar() {
+  const [authed, setAuthed] = useState<boolean | null>(null);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [view, setView] = useState<View>("week");
+  const [anchor, setAnchor] = useState<Date>(new Date());
+  const [calendars, setCalendars] = useState<Cal[]>([]);
+  const [events, setEvents] = useState<Ev[]>([]);
+  const [lists, setLists] = useState<ListMeta[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [modal, setModal] = useState<Modal>(null);
+
+  const acctColor = useCallback(
+    (email: string) => accounts.find((a) => a.email === email)?.color || "#888",
+    [accounts],
+  );
+
+  // boot: who are we?
+  useEffect(() => {
+    (async () => {
+      const st = await fetch("/api/status").then((r) => r.json());
+      setAccounts(st.accounts || []);
+      setAuthed(!!st.authed);
+    })().catch(() => setAuthed(false));
+  }, []);
+
+  const reloadTasks = useCallback(async () => {
+    const tk = await api("GET", "/api/tasks");
+    setLists(tk.lists);
+    setTasks(tk.tasks);
+  }, []);
+
+  const reload = useCallback(async () => {
+    try {
+      const [min, max] = rangeFor(view, anchor);
+      const evs = await api("GET", `/api/events?timeMin=${enc(min.toISOString())}&timeMax=${enc(max.toISOString())}`);
+      setEvents(evs);
+      setCalendars(await api("GET", "/api/calendars"));
+      await reloadTasks();
+      const st = await fetch("/api/status").then((r) => r.json());
+      setAccounts(st.accounts || []);
+    } catch (e) {
+      if ((e as { unauth?: boolean })?.unauth) setAuthed(false);
+      else console.error(e);
+    }
+  }, [view, anchor, reloadTasks]);
+
+  useEffect(() => {
+    // Data-fetch effect: reload() awaits the network before any setState, so the
+    // state updates are async, not the synchronous cascade this rule guards against.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (authed) void reload();
+  }, [authed, reload]);
+
+  /* ---------- navigation ---------- */
+  function step(dir: number) {
+    if (view === "month") setAnchor(new Date(anchor.getFullYear(), anchor.getMonth() + dir, 1));
+    else if (view === "day") setAnchor(addDays(anchor, dir));
+    else setAnchor(addDays(anchor, 7 * dir));
+  }
+  const goToDay = (d: Date) => { setView("day"); setAnchor(new Date(d)); };
+
+  /* ---------- task ops ---------- */
+  async function toggleDone(t: Task) {
+    await api("PATCH", "/api/tasks", {
+      account: t.account, tasklist: t.tasklist, id: t.id,
+      status: t.status === "completed" ? "needsAction" : "completed",
+    });
+    await reloadTasks();
+  }
+  async function quickAddTask(list: ListMeta, title: string) {
+    if (!title.trim()) return;
+    await api("POST", "/api/tasks", { account: list.account, tasklist: list.id, title: title.trim() });
+    await reloadTasks();
+  }
+
+  /* ---------- modal helpers ---------- */
+  function openDetail(ev: Ev) { setModal({ kind: "detail", ev }); }
+  function openEvent(ev?: Ev, presetStart?: Date) {
+    let start: Date, end: Date, allDay = false;
+    if (ev) {
+      allDay = ev.allDay;
+      if (allDay) { start = new Date(`${ev.start}T09:00`); end = addDays(new Date(`${ev.end}T00:00:00`), -1); end.setHours(10, 0, 0, 0); }
+      else { start = new Date(ev.start); end = new Date(ev.end); }
+    } else { start = presetStart || new Date(); end = new Date(start.getTime() + 3600000); }
+    const first = calendars[0];
+    setModal({
+      kind: "event", isNew: !ev, ev,
+      draft: {
+        account: ev?.account || first?.account || "",
+        calendarId: ev?.calendarId || first?.id || "",
+        summary: ev?.summary || "",
+        allDay, start: localInput(start), end: localInput(end),
+        location: ev?.location || "", description: ev?.description || "",
+      },
+    });
+  }
+  function openTask(t: Task) {
+    setModal({
+      kind: "task", isNew: false,
+      draft: {
+        account: t.account, tasklist: t.tasklist, id: t.id, title: t.title,
+        due: t.due ? ymd(new Date(t.due.slice(0, 10) + "T00:00:00")) : "",
+        dueTime: t.dueTime || "", notes: t.notes || "", done: t.status === "completed",
+      },
+    });
+  }
+
+  async function saveEvent() {
+    if (modal?.kind !== "event") return;
+    const d = modal.draft;
+    const payload: Record<string, unknown> = {
+      summary: d.summary, location: d.location, description: d.description, allDay: d.allDay,
+    };
+    if (d.allDay) { payload.start = ymd(new Date(d.start)); payload.end = ymd(addDays(new Date(d.end), 1)); }
+    else { payload.start = toRFC3339(new Date(d.start)); payload.end = toRFC3339(new Date(d.end)); }
+    if (modal.isNew) {
+      if (!d.calendarId) { alert("カレンダーがありません"); return; }
+      await api("POST", "/api/events", { ...payload, account: d.account, calendarId: d.calendarId });
+    } else {
+      await api("PATCH", "/api/events", { ...payload, account: d.account, calendarId: d.calendarId, id: modal.ev!.id });
+    }
+    setModal(null); await reload();
+  }
+  async function deleteEvent() {
+    if (modal?.kind !== "event" || !modal.ev) return;
+    const e = modal.ev;
+    await api("DELETE", `/api/events?account=${enc(e.account)}&calendarId=${enc(e.calendarId)}&id=${enc(e.id)}`);
+    setModal(null); await reload();
+  }
+  async function saveTask() {
+    if (modal?.kind !== "task") return;
+    const d = modal.draft;
+    await api("PATCH", "/api/tasks", {
+      account: d.account, tasklist: d.tasklist, id: d.id,
+      title: d.title, notes: d.notes, due: d.due || null, dueTime: d.dueTime || null,
+      status: d.done ? "completed" : "needsAction",
+    });
+    setModal(null); await reloadTasks();
+  }
+  async function deleteTask() {
+    if (modal?.kind !== "task") return;
+    const d = modal.draft;
+    await api("DELETE", `/api/tasks?account=${enc(d.account)}&tasklist=${enc(d.tasklist)}&id=${enc(d.id!)}`);
+    setModal(null); await reloadTasks();
+  }
+  async function disconnect(email: string) {
+    if (!confirm(`${email} を切断しますか？`)) return;
+    await api("DELETE", `/api/accounts?email=${enc(email)}`);
+    setModal(null); await reload();
+  }
+
+  /* ---------- derived ---------- */
+  const tasksDue = (day: Date) =>
+    tasks.filter((t) => { const dd = taskDueDate(t); return dd && sameDay(dd, day); });
+
+  // timed items for a day column: timed events + tasks that have a time-of-day
+  function dayTimed(day: Date) {
+    const out: { key: string; color: string; label: string; s: number; e: number; isTask: boolean; done: boolean; onClick: () => void }[] = [];
+    for (const ev of events) {
+      if (ev.allDay) continue;
+      const s = new Date(ev.start);
+      if (!sameDay(s, day)) continue;
+      const e = new Date(ev.end);
+      const sm = s.getHours() * 60 + s.getMinutes();
+      const em = Math.max(e.getHours() * 60 + e.getMinutes(), sm + 20);
+      out.push({ key: `e:${ev.account}:${ev.id}`, color: ev.color || "#4285f4", label: ev.summary, s: sm, e: em, isTask: false, done: false, onClick: () => openDetail(ev) });
+    }
+    for (const t of tasks) {
+      const dd = taskDueDate(t);
+      if (!dd || !sameDay(dd, day) || !t.dueTime) continue;
+      const sm = minsOf(t.dueTime);
+      out.push({ key: `t:${t.account}:${t.id}`, color: acctColor(t.account), label: t.title || "(無題)", s: sm, e: sm + 30, isTask: true, done: t.status === "completed", onClick: () => openTask(t) });
+    }
+    return out;
+  }
+
+  if (authed === null) return <div className="center"><p>読み込み中…</p></div>;
+  if (authed === false) {
+    return (
+      <div className="center">
+        <h1>Kairos</h1>
+        <p>Google アカウントに接続してください。</p>
+        <button className="btn btn-primary" onClick={() => signIn("google")}>Google で接続</button>
+      </div>
+    );
+  }
+
+  const rangeLabel =
+    view === "month" ? `${anchor.getFullYear()}年${anchor.getMonth() + 1}月`
+    : view === "day" ? `${anchor.getFullYear()}年${anchor.getMonth() + 1}月${anchor.getDate()}日 (${WD[anchor.getDay()]})`
+    : (() => { const ds = viewDays(view, anchor); const a = ds[0], b = ds[6]; return `${a.getFullYear()}年${a.getMonth() + 1}月${a.getDate()}日 – ${b.getMonth() + 1}月${b.getDate()}日`; })();
+
+  return (
+    <div>
+      <div className="topbar">
+        <span className="brand">Kairos</span>
+        <div className="range">{rangeLabel}</div>
+        <div className="nav">
+          <button onClick={() => step(-1)} title="前へ">‹</button>
+          <button onClick={() => setAnchor(new Date())}>今日</button>
+          <button onClick={() => step(1)} title="次へ">›</button>
+        </div>
+        <div className="seg">
+          {(["month", "week", "day"] as View[]).map((v) => (
+            <button key={v} className={view === v ? "on" : ""} onClick={() => setView(v)}>
+              {v === "month" ? "月" : v === "week" ? "週" : "日"}
+            </button>
+          ))}
+        </div>
+        <div className="spacer" />
+        <button className="btn btn-primary" onClick={() => openEvent()}>+ 予定</button>
+        <button className="btn" onClick={reload} title="再読み込み">⟳</button>
+        <button className="who" onClick={() => setModal({ kind: "accounts" })} title="アカウント">
+          {accounts.map((a) => <span key={a.email} className="dot" style={{ background: a.color || "#888" }} />)}
+          <span>{accounts.length === 1 ? accounts[0].email : accounts.length ? `${accounts.length} アカウント` : "接続なし"}</span>
+        </button>
+      </div>
+
+      <div className="body">
+        <div className="cal">
+          {view === "month"
+            ? <MonthView anchor={anchor} events={events} tasksDue={tasksDue} acctColor={acctColor} onDay={goToDay} onEvent={openDetail} onTask={openTask} />
+            : <TimeView view={view} anchor={anchor} events={events} tasksDue={tasksDue} dayTimed={dayTimed} onEvent={openDetail} onTask={openTask} onSlot={(d) => openEvent(undefined, d)} />}
+        </div>
+        <TasksRail
+          lists={lists} tasks={tasks} multi={accounts.length > 1} acctColor={acctColor}
+          onToggle={toggleDone} onOpen={openTask} onAdd={quickAddTask}
+        />
+      </div>
+
+      {modal?.kind === "detail" && <DetailModal ev={modal.ev} calendars={calendars} accounts={accounts} onClose={() => setModal(null)} onEdit={() => openEvent(modal.ev)} />}
+      {modal?.kind === "event" && (
+        <EventModal
+          modal={modal} calendars={calendars}
+          set={(patch) => setModal((m) => (m?.kind === "event" ? { ...m, draft: { ...m.draft, ...patch } } : m))}
+          onSave={saveEvent} onDelete={deleteEvent} onClose={() => setModal(null)}
+        />
+      )}
+      {modal?.kind === "task" && (
+        <TaskModal
+          draft={modal.draft}
+          set={(patch) => setModal((m) => (m?.kind === "task" ? { ...m, draft: { ...m.draft, ...patch } } : m))}
+          onSave={saveTask} onDelete={deleteTask} onClose={() => setModal(null)}
+        />
+      )}
+      {modal?.kind === "accounts" && (
+        <AccountsModal accounts={accounts} onClose={() => setModal(null)} onDisconnect={disconnect} onSignOut={() => signOut()} />
+      )}
+    </div>
+  );
+}
+
+/* =============================================================== time view */
+function packColumns<T extends { s: number; e: number }>(items: T[]) {
+  const sorted = items.slice().sort((a, b) => a.s - b.s || a.e - b.e);
+  const out: { item: T; col: number; ncols: number }[] = [];
+  let cluster: T[] = [], clusterEnd = -1;
+  const flush = () => {
+    const cols: number[] = [];
+    const placed = cluster.map((it) => {
+      let c = 0; while (cols[c] !== undefined && cols[c] > it.s) c++;
+      cols[c] = it.e; return { item: it, col: c };
+    });
+    const n = cols.length;
+    placed.forEach((p) => out.push({ ...p, ncols: n }));
+    cluster = []; clusterEnd = -1;
+  };
+  for (const it of sorted) {
+    if (cluster.length && it.s >= clusterEnd) flush();
+    cluster.push(it); clusterEnd = Math.max(clusterEnd, it.e);
+  }
+  if (cluster.length) flush();
+  return out;
+}
+
+function TimeView(props: {
+  view: View; anchor: Date; events: Ev[];
+  tasksDue: (d: Date) => Task[];
+  dayTimed: (d: Date) => { key: string; color: string; label: string; s: number; e: number; isTask: boolean; done: boolean; onClick: () => void }[];
+  onEvent: (e: Ev) => void; onTask: (t: Task) => void; onSlot: (d: Date) => void;
+}) {
+  const { view, anchor, events, tasksDue, dayTimed, onEvent, onTask, onSlot } = props;
+  const ds = viewDays(view, anchor);
+  const cols = `var(--gutter) repeat(${ds.length},1fr)`;
+  const now = new Date();
+
+  return (
+    <>
+      <div className="dayhead" style={{ gridTemplateColumns: cols }}>
+        <div className="corner" />
+        {ds.map((d) => {
+          const wd = d.getDay();
+          return (
+            <div key={+d} className={`dh ${wd === 6 ? "sat" : wd === 0 ? "sun" : ""} ${sameDay(d, now) ? "today" : ""}`}>
+              <div className="wd">{WD[wd]}</div>
+              <div className="dn">{d.getDate()}</div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="allday" style={{ gridTemplateColumns: cols }}>
+        <div className="lbl">終日</div>
+        {ds.map((d) => (
+          <div key={+d} className="ad-col">
+            {events.filter((e) => e.allDay).map((e) => {
+              const s = new Date(`${e.start}T00:00:00`), en = new Date(`${e.end}T00:00:00`);
+              if (!(d >= s && d < en)) return null;
+              return <div key={`${e.account}:${e.id}`} className="chip" style={{ background: e.color || "#4285f4" }} onClick={() => onEvent(e)}>{e.summary}</div>;
+            })}
+            {tasksDue(d).filter((t) => !t.dueTime).map((t) => (
+              <div key={`${t.account}:${t.id}`} className={`chip task${t.status === "completed" ? " done" : ""}`} onClick={() => onTask(t)}>
+                <span>✓</span>{t.title || "(無題)"}
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+
+      <div className="gridwrap" ref={(el) => { if (el && !el.dataset.scrolled) { el.scrollTop = 8 * HOUR_H; el.dataset.scrolled = "1"; } }}>
+        <div className="grid" style={{ gridTemplateColumns: cols }}>
+          <div className="gutter">
+            {Array.from({ length: HOURS }, (_, h) => (
+              <div key={h} className="hr">{h > 0 && <span>{pad(h)}:00</span>}</div>
+            ))}
+          </div>
+          {ds.map((d) => {
+            const packed = packColumns(dayTimed(d));
+            return (
+              <div key={+d} className="col">
+                {Array.from({ length: HOURS }, (_, h) => (
+                  <div key={h} className="hr" onClick={() => { const s = new Date(d); s.setHours(h, 0, 0, 0); onSlot(s); }} />
+                ))}
+                {packed.map(({ item, col, ncols }) => (
+                  <div
+                    key={item.key}
+                    className={`ev${item.isTask ? " taskev" : ""}${item.done ? " done" : ""}`}
+                    style={{
+                      top: `${item.s / 60 * HOUR_H}px`,
+                      height: `${(item.e - item.s) / 60 * HOUR_H - 2}px`,
+                      left: `calc(${col / ncols * 100}% + 1px)`,
+                      width: `calc(${100 / ncols}% - 3px)`,
+                      background: item.isTask ? undefined : item.color,
+                    }}
+                    onClick={(ev) => { ev.stopPropagation(); item.onClick(); }}
+                  >
+                    <div className="t">{item.isTask ? `✓ ${item.label}` : item.label}</div>
+                    <div className="time">{pad(Math.floor(item.s / 60))}:{pad(item.s % 60)}</div>
+                  </div>
+                ))}
+                {sameDay(d, now) && (
+                  <div className="nowline" style={{ top: `${(now.getHours() * 60 + now.getMinutes()) / 60 * HOUR_H}px` }} />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </>
+  );
+}
+
+/* ============================================================== month view */
+function MonthView(props: {
+  anchor: Date; events: Ev[]; tasksDue: (d: Date) => Task[]; acctColor: (e: string) => string;
+  onDay: (d: Date) => void; onEvent: (e: Ev) => void; onTask: (t: Task) => void;
+}) {
+  const { anchor, events, tasksDue, onDay, onEvent, onTask } = props;
+  const gs = startOfWeek(new Date(anchor.getFullYear(), anchor.getMonth(), 1));
+  const mo = anchor.getMonth();
+  const now = new Date();
+  const LIMIT = 4;
+
+  return (
+    <div className="month">
+      <div className="wdrow">{WD_MON.map((x) => <div key={x}>{x}</div>)}</div>
+      <div className="cells">
+        {Array.from({ length: 42 }, (_, i) => {
+          const d = addDays(gs, i);
+          type Item = { key: string; sort: number; node: ReactNode };
+          const items: Item[] = [];
+          events.filter((e) => e.allDay).forEach((e) => {
+            const s = new Date(`${e.start}T00:00:00`), en = new Date(`${e.end}T00:00:00`);
+            if (d >= s && d < en) items.push({ key: `a:${e.account}:${e.id}`, sort: -1, node: <div className="mchip" style={{ background: e.color || "#4285f4" }} onClick={(ev) => { ev.stopPropagation(); onEvent(e); }}>{e.summary}</div> });
+          });
+          events.filter((e) => !e.allDay).forEach((e) => {
+            const s = new Date(e.start);
+            if (!sameDay(s, d)) return;
+            items.push({ key: `e:${e.account}:${e.id}`, sort: s.getHours() * 60 + s.getMinutes(), node: <div className="mchip" style={{ background: e.color || "#4285f4" }} onClick={(ev) => { ev.stopPropagation(); onEvent(e); }}><span className="mt">{pad(s.getHours())}:{pad(s.getMinutes())}</span>{e.summary}</div> });
+          });
+          tasksDue(d).forEach((t) => {
+            const sort = t.dueTime ? minsOf(t.dueTime) : 1e6;
+            items.push({ key: `t:${t.account}:${t.id}`, sort, node: <div className={`mchip task${t.status === "completed" ? " done" : ""}`} onClick={(ev) => { ev.stopPropagation(); onTask(t); }}>✓ {t.title || "(無題)"}</div> });
+          });
+          items.sort((a, b) => a.sort - b.sort);
+          return (
+            <div key={+d} className={`mcell${d.getMonth() !== mo ? " dim" : ""}${sameDay(d, now) ? " today" : ""}`}
+                 onClick={(e) => { if (e.target === e.currentTarget) onDay(d); }}>
+              <div className="mnum" onClick={(e) => { e.stopPropagation(); onDay(d); }}>{d.getDate()}</div>
+              {items.slice(0, LIMIT).map((it) => <div key={it.key}>{it.node}</div>)}
+              {items.length > LIMIT && <div className="mmore" onClick={(e) => { e.stopPropagation(); onDay(d); }}>+{items.length - LIMIT} 件</div>}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* =============================================================== tasks rail */
+function TasksRail(props: {
+  lists: ListMeta[]; tasks: Task[]; multi: boolean; acctColor: (e: string) => string;
+  onToggle: (t: Task) => void; onOpen: (t: Task) => void; onAdd: (l: ListMeta, title: string) => void;
+}) {
+  const { lists, tasks, multi, acctColor, onToggle, onOpen, onAdd } = props;
+  const now = startOfDay(new Date());
+  return (
+    <div className="rail">
+      <h2>タスク</h2>
+      {lists.map((l) => {
+        const items = tasks.filter((t) => t.account === l.account && t.tasklist === l.id)
+          .sort((a, b) => Number(a.status === "completed") - Number(b.status === "completed"));
+        return (
+          <div key={`${l.account}|${l.id}`} className="tlist">
+            <div className="name">
+              {multi && <span className="dot" style={{ background: acctColor(l.account) }} />}
+              {l.title}
+            </div>
+            {items.map((t) => {
+              const done = t.status === "completed";
+              const dd = taskDueDate(t);
+              const over = dd && !done && dd < now;
+              return (
+                <div key={`${t.account}:${t.id}`} className={`task${done ? " done" : ""}`}>
+                  <div className={`cbox${done ? " on" : ""}`} onClick={() => onToggle(t)} />
+                  <div className="body2" onClick={() => onOpen(t)}>
+                    <div className="title">{t.title || "(無題)"}</div>
+                    {dd && <div className={`due${over ? " over" : ""}`}>{dd.getMonth() + 1}/{dd.getDate()}{t.dueTime ? ` ${t.dueTime}` : ""}</div>}
+                  </div>
+                </div>
+              );
+            })}
+            <AddRow onAdd={(v) => onAdd(l, v)} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function AddRow({ onAdd }: { onAdd: (v: string) => void }) {
+  const [v, setV] = useState("");
+  const go = () => { onAdd(v); setV(""); };
+  return (
+    <div className="addrow">
+      <input placeholder="タスクを追加" value={v} onChange={(e) => setV(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") go(); }} />
+      <button onClick={go}>+</button>
+    </div>
+  );
+}
+
+/* =================================================================== modals */
+function Scrim({ children, onClose }: { children: ReactNode; onClose: () => void }) {
+  return <div className="scrim" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}><div className="modal">{children}</div></div>;
+}
+
+function fmtAllDay(e: Ev) {
+  const s = new Date(`${e.start}T00:00:00`), en = addDays(new Date(`${e.end}T00:00:00`), -1);
+  return sameDay(s, en) ? `${s.getMonth() + 1}/${s.getDate()} 終日` : `${s.getMonth() + 1}/${s.getDate()} – ${en.getMonth() + 1}/${en.getDate()} 終日`;
+}
+function fmtTimed(e: Ev) {
+  const s = new Date(e.start), en = new Date(e.end);
+  const t = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const date = `${s.getMonth() + 1}/${s.getDate()} (${WD[s.getDay()]})`;
+  return sameDay(s, en) ? `${date} ${t(s)}–${t(en)}` : `${date} ${t(s)} – ${en.getMonth() + 1}/${en.getDate()} ${t(en)}`;
+}
+
+function DetailModal({ ev, calendars, accounts, onClose, onEdit }: { ev: Ev; calendars: Cal[]; accounts: Account[]; onClose: () => void; onEdit: () => void }) {
+  const cal = calendars.find((c) => c.account === ev.account && c.id === ev.calendarId);
+  const acct = accounts.find((a) => a.email === ev.account);
+  const rs = (r?: string) => ({ accepted: ["ok", "✓"], declined: ["no", "✕"], tentative: ["maybe", "?"] } as Record<string, string[]>)[r || ""] || ["", "・"];
+  return (
+    <Scrim onClose={onClose}>
+      <div className="det-title"><span className="det-bar" style={{ background: ev.color || "#4285f4" }} /><span>{ev.summary}</span></div>
+      <div style={{ marginTop: 10 }}>
+        <div className="det-row"><span className="k">日時</span><span className="v">{ev.allDay ? fmtAllDay(ev) : fmtTimed(ev)}</span></div>
+        {(cal || acct) && <div className="det-row"><span className="k">予定表</span><span className="v"><span className="acct-pill"><span className="dot" style={{ background: ev.color || "#4285f4" }} />{cal?.summary || ""}{acct ? ` · ${acct.email}` : ""}</span></span></div>}
+        {ev.location && <div className="det-row"><span className="k">場所</span><span className="v">{ev.location}</span></div>}
+        {ev.meet && <div className="det-row"><span className="k">通話</span><span className="v"><a href={ev.meet} target="_blank" rel="noopener noreferrer">{ev.meet}</a></span></div>}
+        {ev.description && <div className="det-row"><span className="k">詳細</span><span className="v">{ev.description}</span></div>}
+        {ev.attendees?.length > 0 && (
+          <div className="det-row"><span className="k">参加者</span><span className="v">
+            {ev.attendees.map((a, i) => { const [c, g] = rs(a.response); return <div key={i} className="att"><span className={`rs ${c}`}>{g}</span><span>{a.name || a.email}{a.organizer ? " (主催)" : ""}</span></div>; })}
+          </span></div>
+        )}
+        {ev.attachments?.length > 0 && (
+          <div className="det-row"><span className="k">添付</span><span className="v">
+            {ev.attachments.map((a, i) => <div key={i}><a href={a.url} target="_blank" rel="noopener noreferrer">{a.title || a.url}</a></div>)}
+          </span></div>
+        )}
+      </div>
+      <div className="modal-foot" style={{ marginTop: 14 }}>
+        {ev.htmlLink && <a className="btn" href={ev.htmlLink} target="_blank" rel="noopener noreferrer">Google で開く</a>}
+        <div className="spacer" />
+        <button className="btn" onClick={onEdit}>編集</button>
+        <button className="btn btn-primary" onClick={onClose}>閉じる</button>
+      </div>
+    </Scrim>
+  );
+}
+
+function EventModal({ modal, calendars, set, onSave, onDelete, onClose }: {
+  modal: Extract<Modal, { kind: "event" }>; calendars: Cal[];
+  set: (p: Partial<EventDraft>) => void; onSave: () => void; onDelete: () => void; onClose: () => void;
+}) {
+  const d = modal.draft;
+  const calIdx = calendars.findIndex((c) => c.account === d.account && c.id === d.calendarId);
+  return (
+    <Scrim onClose={onClose}>
+      <h3>{modal.isNew ? "予定を追加" : "予定を編集"}</h3>
+      <div className="field"><label>タイトル</label><input value={d.summary} onChange={(e) => set({ summary: e.target.value })} /></div>
+      <div className="field"><label>カレンダー</label>
+        <select value={calIdx} disabled={!modal.isNew} onChange={(e) => { const c = calendars[+e.target.value]; if (c) set({ account: c.account, calendarId: c.id }); }}>
+          {calendars.map((c, i) => <option key={`${c.account}:${c.id}`} value={i}>{c.account} — {c.summary}</option>)}
+        </select>
+      </div>
+      <div className="chk" style={{ marginBottom: 10 }}><input type="checkbox" checked={d.allDay} onChange={(e) => set({ allDay: e.target.checked })} /><label style={{ margin: 0 }}>終日</label></div>
+      <div className="row2">
+        <div className="field"><label>開始</label><input type="datetime-local" value={d.start} onChange={(e) => set({ start: e.target.value })} /></div>
+        <div className="field"><label>終了</label><input type="datetime-local" value={d.end} onChange={(e) => set({ end: e.target.value })} /></div>
+      </div>
+      <div className="field"><label>場所</label><input value={d.location} onChange={(e) => set({ location: e.target.value })} /></div>
+      <div className="field"><label>詳細</label><textarea value={d.description} onChange={(e) => set({ description: e.target.value })} /></div>
+      <div className="modal-foot">
+        {!modal.isNew && <button className="link-danger" onClick={onDelete}>削除</button>}
+        <div className="spacer" />
+        <button className="btn" onClick={onClose}>キャンセル</button>
+        <button className="btn btn-primary" onClick={onSave}>保存</button>
+      </div>
+    </Scrim>
+  );
+}
+
+function TaskModal({ draft, set, onSave, onDelete, onClose }: {
+  draft: TaskDraft; set: (p: Partial<TaskDraft>) => void; onSave: () => void; onDelete: () => void; onClose: () => void;
+}) {
+  return (
+    <Scrim onClose={onClose}>
+      <h3>タスクを編集</h3>
+      <div className="field"><label>タイトル</label><input value={draft.title} onChange={(e) => set({ title: e.target.value })} /></div>
+      <div className="row2">
+        <div className="field"><label>期限（日付）</label><input type="date" value={draft.due} onChange={(e) => set({ due: e.target.value })} /></div>
+        <div className="field"><label>時刻</label><input type="time" value={draft.dueTime} onChange={(e) => set({ dueTime: e.target.value })} disabled={!draft.due} /></div>
+      </div>
+      <div className="hint">時刻は Kairos のみで保持（Google Tasks は日付しか持てない）。スマホの Google には出ません。</div>
+      <div className="field"><label>メモ</label><textarea value={draft.notes} onChange={(e) => set({ notes: e.target.value })} /></div>
+      <div className="chk" style={{ marginBottom: 12 }}><input type="checkbox" checked={draft.done} onChange={(e) => set({ done: e.target.checked })} /><label style={{ margin: 0 }}>完了</label></div>
+      <div className="modal-foot">
+        <button className="link-danger" onClick={onDelete}>削除</button>
+        <div className="spacer" />
+        <button className="btn" onClick={onClose}>キャンセル</button>
+        <button className="btn btn-primary" onClick={onSave}>保存</button>
+      </div>
+    </Scrim>
+  );
+}
+
+function AccountsModal({ accounts, onClose, onDisconnect, onSignOut }: {
+  accounts: Account[]; onClose: () => void; onDisconnect: (e: string) => void; onSignOut: () => void;
+}) {
+  return (
+    <Scrim onClose={onClose}>
+      <h3>アカウント</h3>
+      {accounts.length === 0 && <p style={{ color: "var(--muted)" }}>接続中のアカウントはありません。</p>}
+      {accounts.map((a) => (
+        <div key={a.email} className="acct-row">
+          <span className="dot" style={{ background: a.color || "#888" }} />
+          <span className="em">{a.email}</span>
+          <button className="link-danger" onClick={() => onDisconnect(a.email)}>切断</button>
+        </div>
+      ))}
+      <div className="modal-foot" style={{ marginTop: 14 }}>
+        <a className="btn btn-primary" href="/api/connect/google">+ アカウントを追加</a>
+        <button className="btn" onClick={onSignOut}>サインアウト</button>
+        <div className="spacer" />
+        <button className="btn" onClick={onClose}>閉じる</button>
+      </div>
+    </Scrim>
+  );
+}
