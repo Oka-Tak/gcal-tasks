@@ -1,147 +1,88 @@
-# Calendar + Tasks
+# Kairos
 
 Google カレンダーと Google ToDo（Tasks）を1画面に統合する、自分専用のセルフホスト Web アプリ。
-ローカル DB や同期エンジンは持たず、**Google API を直接読み書きする薄いクライアント**。表示は読み取り、
-追加・編集・完了・削除はその場で Google に書き戻す（双方向）。Linux / Windows どちらからでも
-ブラウザで使える。
+Next.js 16（App Router / TypeScript）+ SQLite（Drizzle）+ Auth.js。
 
-- **月 / 週 / 日**の3ビュー切替。
-- **自分の複数 Google アカウント**を接続して1画面にマージ表示（個人＋仕事など）。
-- 予定の**詳細表示**（説明・場所・参加者の出欠・Meet リンク・添付・「Google で開く」）。
-- Cloudflare Tunnel + Access で安全に公開できる（後述）。
+旧版（FastAPI の薄い API ブリッジ）からの作り直し。最大の違いは **ローカル DB（SQLite）を持つ**こと。
+Google を「真実の源」とする同期ミラーを保持し、その上に **Google が保存できない情報**（とくに
+**タスクの時刻**）をローカル専用カラムとして足す。DB は素直なスキーマなので、Proxmox 上の別ツール
+（Claude Code など）から直接読める。
+
+- **月 / 週 / 日**の3ビュー。
+- **自分の複数 Google アカウント**を接続して1画面にマージ。
+- 予定の**詳細表示**（説明・場所・参加者の出欠・Meet・添付・「Google で開く」）。
+- **タスクに時刻**を付けられる（Kairos 内のみ。Google Tasks API は日付しか持てない）。
+- Auth.js による堅いログイン＋セッション、トークンは**暗号化して保存**。
 
 ---
 
-## 1. Google Cloud 側の準備（これだけは手作業）
-
-アプリは Google に接続するための **OAuth クライアント**を必要とする。コードでは肩代わりできない。
+## 1. Google Cloud 側の準備
 
 1. [Google Cloud Console](https://console.cloud.google.com/) でプロジェクトを作成。
-2. 「API とサービス → ライブラリ」で次の2つを有効化：
-   - **Google Calendar API**
-   - **Google Tasks API**
-3. 「OAuth 同意画面」：
-   - User Type は **外部**。
-   - スコープ追加は不要（アプリ側で要求する）。
-   - **公開ステータスを「本番（公開）」にする**。テストのままだと後述の通りログインが7日で切れる。
-     未審査でも、自分のアカウントで使う分には警告画面で「続行」すれば通る。
-     （または公開せず、テストユーザーに自分の Gmail を追加。ただし7日失効に注意。）
-4. 「認証情報 → 認証情報を作成 → OAuth クライアント ID」：
-   - アプリの種類：**ウェブ アプリケーション**
-   - **承認済みのリダイレクト URI** に次を追加：
-     `http://localhost:8765/oauth2callback`
-   - 作成後、JSON をダウンロードし、**`client_secret.json`** という名前でこのフォルダ直下に置く。
+2. 「API とサービス → ライブラリ」で **Google Calendar API** と **Google Tasks API** を有効化。
+3. 「OAuth 同意画面」：User Type は外部。常用するなら**本番（公開）**に（テストのままだと7日で失効）。
+4. 「認証情報 → OAuth クライアント ID」：種類は **ウェブ アプリケーション**。**承認済みリダイレクト URI** に
+   次の2つを追加（`AUTH_URL` を基準に）：
+   - `http://localhost:3000/api/auth/callback/google` — アプリのログイン
+   - `http://localhost:3000/api/connect/callback` — 追加アカウントの接続
+   公開時はここを公開 https URL に差し替え／追加する。
+5. クライアント ID とシークレットを `.env.local` の `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET` に。
 
----
-
-## 2. 起動
+## 2. 起動（開発）
 
 ```bash
-pip install -r requirements.txt
-python main.py
+cp .env.example .env.local      # 値を埋める（AUTH_SECRET, KAIROS_ENC_KEY は openssl rand -base64 32）
+npm install
+npm run dev                     # http://localhost:3000
 ```
 
-ブラウザで `http://localhost:8765` を開き、「Google で接続」。許可するとカレンダーとタスクが出る。
-（接続トークンは `tokens/<email>.json` に保存される。`chmod 600`・流出厳禁。）
+「Google で接続」でログイン。許可するとカレンダーとタスクが出る。スキーマのマイグレーションは
+**起動時に自動適用**される（`drizzle/` の SQL）。スキーマを変えたら `npm run db:generate`。
 
-> 既定の待ち受けは **`127.0.0.1`（loopback のみ）** に変更した。LAN や Tailscale から直接開くなら
-> `HOST=0.0.0.0` を明示すること。公開は後述の Cloudflare Tunnel 推奨。
+**複数アカウント**: 右上のアカウント表示 →「+ アカウントを追加」で別の Google を接続。切断も同じ場所。
 
-**複数アカウントの追加**: 右上のアカウント表示をクリック →「+ アカウントを追加」（= `/login` を再実行）。
-別の Google でログインすると、そのアカウントのカレンダー/タスクもマージ表示される。切断も同じ画面から。
+## 3. 公開する（Cloudflare Tunnel + Access）
 
----
+> Cloudflare **Pages には載らない**（Next.js の常駐サーバ＋SQLite ファイルは Workers では動かない）。
+> Proxmox 上で `npm run start` し、前段に **Cloudflare Tunnel（公開 https）+ Access（認証）** を置く。
 
-## 3. リモート（Tailscale 越し）で使う
+1. `npm run build && npm run start`（既定 `0.0.0.0:3000`。Tunnel 前提なら待ち受けは Proxmox 内部に留める）。
+2. `AUTH_URL` を公開 URL（例 `https://cal.example.com`）に。Google のリダイレクト URI も同URLで登録。
+3. `cloudflared` で `cal.example.com → http://127.0.0.1:3000` を公開。
+4. Zero Trust → Access で `cal.example.com` を保護し、許可する identity（自分のメール）を設定。
+5. 多層防御として `ALLOWED_EMAILS` を設定（Auth.js のログインを許可リストに制限）。ポートは外に晒さない。
 
-ポイント：**初回ログインだけは localhost 経由**で行う。Google は非 localhost への http
-リダイレクトを拒否するため。一度トークンを取れば、以降アプリはサーバ側で Google を叩くので、
-別端末から tailnet アドレスでアクセスしても OAuth リダイレクトは発生しない。
-
-- サーバ上で直接ログインできるなら、それで OK。
-- できないなら、手元から SSH トンネルを張って localhost でログイン：
-  ```bash
-  ssh -L 8765:localhost:8765 user@your-server
-  # 手元のブラウザで http://localhost:8765 を開いて接続
-  ```
-- `tokens/` ができた後は、`http://<tailnet-ip>:8765`（`HOST=0.0.0.0` 必須）などから普通に使える。
-
----
-
-## 4. 公開する（Cloudflare Tunnel + Access）
-
-> **Cloudflare Pages には載せられない。** Pages は静的＋Workers(JS) ランタイムで、FastAPI（Python 常駐
-> サーバ）も `tokens/` のファイル状態も動かせない。公開したいなら、Proxmox 上でこのアプリを動かしたまま、
-> **前段に Cloudflare Tunnel（公開 HTTPS）+ Cloudflare Access（認証）** を置くのが正解。コード無改修で、
-> ダッシュボードの1部品として残せる。
-
-手順の要点:
-
-1. アプリは loopback で起動（既定の `HOST=127.0.0.1`）。`BASE_URL` を公開 URL に:
-   ```bash
-   BASE_URL=https://cal.example.com python main.py
-   ```
-2. Google Cloud の OAuth クライアントに **承認済みリダイレクト URI** を追加:
-   `https://cal.example.com/oauth2callback`
-3. `cloudflared` トンネルで `cal.example.com` → `http://127.0.0.1:8765` を公開。
-4. Zero Trust → Access で `cal.example.com` にアプリを作成し、許可する identity（自分のメール）を設定。
-5. 多層防御として、アプリ側でもメール許可リストを有効化:
-   ```bash
-   ALLOWED_EMAILS=you@gmail.com,you@work.com
-   ```
-   Access が付与する `Cf-Access-Authenticated-User-Email` ヘッダを照合する。**ポートを直接外へ晒さない**
-   こと（`HOST=127.0.0.1` のまま）。晒すとヘッダ偽装でこの照合を回避できる。
-
-これで「公開 HTTPS + 認証必須」になる。アプリ自体に来訪者ログインは無い（前段で守る設計）。
-
----
-
-## 5. 知っておくべき制約
+## 4. 知っておくべき制約
 
 | 項目 | 内容 |
 |---|---|
-| トークン7日失効 | OAuth 同意画面が「テスト」状態だと refresh token が7日で失効。**本番公開**で回避。 |
-| タスクは日付のみ | Google Tasks API は期限を**日付粒度のみ**（時刻不可）。2026 時点でも公式仕様。時刻が要る「やること」は Task でなく**予定（イベント）**で作る。 |
-| 表示範囲 | 月/週/日の3ビュー。接続した全アカウント×全カレンダーをマージ表示。 |
-| 単一「人」 | 利用者は1人想定。自分の複数 Google アカウントは接続可（来訪者ごとのセッションは無い）。 |
-| 待ち受け | 既定 `127.0.0.1`。LAN/Tailscale は `HOST=0.0.0.0` を明示。 |
+| タスクの時刻 | **Kairos の DB のみ**で保持。Google Tasks API は日付粒度しか持てないので、スマホの Google 側には出ない。スマホにも出したい時刻付きの用事は「予定」で作る。 |
+| 同期方針 | Google が真実の源。fetch ごとに DB を upsert し、消えた物はソフト削除。ローカル専用カラム（時刻等）は保持。 |
+| トークン7日失効 | OAuth 同意画面が「テスト」だと refresh token が7日で失効。**本番公開**で回避。 |
+| 単一「人」 | 利用者は1人想定。自分の複数 Google アカウントは接続可。来訪者ごとのセッションは無い（前段で守る）。 |
 
----
-
-## 6. Docker（任意）
+## 5. Docker（任意）
 
 ```bash
-docker build -t cal-tasks .
-docker run -p 8765:8765 \
-  -v "$PWD/client_secret.json:/app/client_secret.json:ro" \
-  -v "$PWD/tokens:/app/tokens" \
-  cal-tasks
+docker build -t kairos .
+docker run -p 3000:3000 --env-file .env.local \
+  -e KAIROS_DB=/data/kairos.db -v kairos-data:/data \
+  kairos
 ```
 
-`tokens/` ディレクトリをマウントすると接続情報が永続化される。空のままでも、起動後に
-`/login` すれば中に `<email>.json` が作られる。コンテナ内で loopback 起動なので、外から繋ぐなら
-`-e HOST=0.0.0.0`（LAN）か、Tunnel を前段に置く。
-
----
+SQLite は `-v` で外出しして永続化する。
 
 ## 構成
 
 ```
-main.py             FastAPI: OAuth + Calendar/Tasks API プロキシ（マルチアカウント）
-static/index.html   月/週/日カレンダー + タスクUI + 詳細モーダル（依存ライブラリなし）
-client_secret.json  Google で発行（自分で配置）
-tokens/<email>.json アカウントごとのトークン（初回ログインで自動生成・chmod 600）
+app/                  App Router（page=カレンダーUI / api/*=Route Handlers）
+app/calendar.tsx      フロント本体（月/週/日・詳細・タスク時刻）。単一クライアントコンポーネント
+auth.ts               Auth.js（Google ログイン + ALLOWED_EMAILS ゲート）
+lib/db/               Drizzle スキーマ + 遅延初期化クライアント
+lib/google.ts         アカウント別 OAuth2 クライアント（自動リフレッシュ→再暗号化保存）
+lib/sync.ts           ミラー同期（fetch→upsert、ローカル専用カラム保持）
+lib/crypto.ts         トークン暗号化（AES-256-GCM）
+drizzle/              生成済みマイグレーション（起動時に自動適用）
 ```
 
-## 設定（環境変数 / .env）
-
-| 変数 | 既定 | 用途 |
-|---|---|---|
-| `PORT` | 8765 | 待ち受けポート |
-| `HOST` | `127.0.0.1` | 待ち受けアドレス。LAN/Tailscale は `0.0.0.0` |
-| `BASE_URL` | http://localhost:8765 | OAuth コールバックの基底 URL（Tunnel 越しは公開 https） |
-| `CLIENT_SECRETS` | ./client_secret.json | クライアント機密のパス |
-| `TOKENS_DIR` | ./tokens | アカウントごとトークンの保存先 |
-| `TOKEN_PATH` | ./token.json | 旧・単一トークンの移行元（初回のみ参照） |
-| `ALLOWED_EMAILS` | （空＝無効） | Cloudflare Access の identity 許可リスト |
-| `FRAME_ANCESTORS` | `'self'` | iframe 埋め込み許可元（ダッシュボード用） |
+設計の詳細・落とし穴は `CONTEXT.md` を参照。環境変数は `.env.example` を参照。

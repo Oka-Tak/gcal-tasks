@@ -1,145 +1,97 @@
-# CONTEXT — gcal-tasks 引き継ぎ
+# CONTEXT — Kairos 引き継ぎ
 
-このリポジトリを Claude Code が引き継ぐための現状メモ。実装済みの設計判断と、変更時に踏みやすい
-地雷を先に共有する。新機能を足す前にこのファイルを読むこと。
+このアプリを次に触る人（人間/エージェント）への現状メモ。実装済みの設計判断と踏みやすい地雷を先に共有する。
+新機能を足す前にこれを読むこと。旧 FastAPI 版は親ディレクトリ（`../`）に参照用として残っている。
 
 ## 目的
 
-Google カレンダーと Google Tasks を1画面に統合する、**個人専用・セルフホストの Web アプリ**。
-Linux / Windows どちらからでもブラウザで使う。Morgen の有料機能を避け、無料で全機能を得るのが動機。
+Google カレンダー + Google Tasks を1画面に統合する個人専用アプリ。最終的には Proxmox 上の個人
+ダッシュボードの1コンポーネントとして動かす。旧版は「DB を持たない薄い API ブリッジ」だったが、
+**タスクに時刻を持たせたい**という要求のため、本版から**ローカル DB を持つ**方針に転換した。
 
 ## 設計判断（守るべき前提）
 
-- **ローカル DB / 同期エンジンを持たない。** Google API を直接読み書きする薄いクライアント。
-  読み取りは毎回 Google を叩き、追加・編集・完了・削除はその場で書き戻す。
-  → 同期競合・差分管理の複雑さを意図的に排除している。DB を導入する変更は、この方針を覆すので
-    やるなら明示的に相談する事項。マルチアカウント化（下記）も DB ではなく**トークンを複数ファイルで
-    持つ**形にして、この方針を守っている。
-- **単一「人」前提・複数アカウント可。** アプリ利用者は1人（あなた）。ただし自分の複数 Google
-  アカウント（個人＋仕事など）を接続して1画面にマージできる。トークンは `tokens/<email>.json`
-  に1アカウント1ファイルで保存（`{"email":..,"token":<creds>}` のラッパ）。**来訪者ごとのセッションは
-  無い** ── アクセス制御は前段（Cloudflare Access / Tailscale）に任せ、`ALLOWED_EMAILS` で二重化する。
-  旧 `token.json` は初回起動時に `tokens/` へ自動移行し、元ファイルは `.bak` にリネームされる。
-- **読み取りは全アカウント×全カレンダーをループしてマージ。** 各 event/task/calendar に `account`
-  （所有アカウントのメール）が付く。書き込み（POST/PATCH/DELETE）は `account` を必須引数にして
-  所有アカウントの service へルーティングする。ここを落とすと別アカウントへ書こうとして失敗する。
-- **OAuth はループバック（localhost）http、または Tunnel 越し https で完結。** 非 localhost への
-  **http** リダイレクトは Google が拒否する。Cloudflare Tunnel を前段に置く場合は `BASE_URL` を
-  公開 https URL にし、`<BASE_URL>/oauth2callback` を承認済みリダイレクト URI に追加する。
-- **PKCE の code_verifier を `/login`→`/oauth2callback` 間で `_pending_verifiers` に保持。**
-  Flow が別インスタンスになるため。ここを消すと `invalid_grant: Missing code verifier` で落ちる。
-  併せて callback では `state` を発行済みのものと照合（CSRF 対策）。未知/失効 state は 400。
-- 環境変数 `OAUTHLIB_RELAX_TOKEN_SCOPE=1` は常時 `setdefault`（スコープ順の揺れ対策）。
-  `OAUTHLIB_INSECURE_TRANSPORT=1` は **`BASE_URL` が http の時だけ** 設定する（https では付けない）。
-- **セキュリティ層（公開前提）。** 全レスポンスに CSP / nosniff / Referrer-Policy を付与する
-  ミドルウェアあり。CSP の `frame-ancestors` は `FRAME_ANCESTORS` で可変（将来の Proxmox
-  ダッシュボード埋め込み用）。`HOST` の既定は **`127.0.0.1`**（loopback）。LAN/Tailscale は
-  `HOST=0.0.0.0` を明示。トークンファイルは `chmod 600`・`tokens/` は `700`。
+- **DB は「Google の同期ミラー + ローカル専用カラム」。** Google が真実の源。読み取り時に Google を
+  fetch して DB を upsert し、Google から消えた行は（同期した窓の中で）ソフト削除する。書き込みは
+  write-through（Google に書く→その行を DB に反映）。**ローカル専用カラム**（`tasks.dueTime` ほか
+  `remindAt` / `sortOrder`）は同期で**絶対に上書きしない**——これが DB を持つ理由。`lib/sync.ts` の
+  `syncTasks` で、conflict 時に更新する集合から local-only 列を外しているのが要。ここを壊すと時刻が消える。
+- **タスクの時刻は Kairos 内のみ。** Google Tasks API は日付粒度しか持てない（公式仕様）。`dueTime`
+  ('HH:MM') は DB だけに保存し Google には送らない。よってスマホの Google 側には出ない。これはバグでなく
+  原理的制約。UI のタスク編集にも明記済み。時刻付きで他端末にも出したい用事は「予定（イベント）」で作る。
+- **単一「人」・複数 Google アカウント。** 利用者は1人。`accounts` テーブルに1アカウント1行、トークンは
+  AES-256-GCM で暗号化（`lib/crypto.ts`、鍵は `KAIROS_ENC_KEY` を sha256 して32バイト化）。来訪者ごとの
+  セッションは無く、アクセス制御は前段（Cloudflare Access）+ `ALLOWED_EMAILS` に任せる。
+- **認証は2層に分離。** (1) **アプリのログイン/セッション** = Auth.js（`auth.ts`、Google プロバイダ、
+  JWT セッション、`signIn` コールバックで `ALLOWED_EMAILS` ゲート）。(2) **データ取得用の Google トークン**
+  = 自前の `accounts` テーブル。ログイン時にそのアカウントを `jwt` コールバックでデータソースとして登録し、
+  追加アカウントは `/api/connect/google`→`/api/connect/callback`（state を cookie で照合する CSRF 対策つき）で
+  足す。Auth.js の adapter は使っていない（同一プロバイダ複数アカウントの linking 沼を避けるため）。
+- **書き込みは `account` 必須・パスに入れない。** 予定の識別は (account, calendarId, googleId) の3つ組で、
+  calendarId に特殊文字が入るため、API は識別子を body / query で渡す（動的ルートセグメントを避けた）。
 
-## 技術スタック
+## 技術スタック / バージョン依存（重要）
 
-- バックエンド: FastAPI + uvicorn（`main.py`）
-- Google: `google-auth` / `google-auth-oauthlib` / `google-api-python-client`
-- フロント: 単一 HTML（`static/index.html`）。ビルド工程なし・外部ライブラリ依存なしの素の JS。
-- Python 3.10 で動作確認済み（開発環境は 3.12）。
+- **Next.js 16**（App Router, Turbopack 既定）。**ここが訓練データと食い違う**ので注意：
+  - `cookies()` / `headers()` / `params` / `searchParams` は**すべて async**（`await` 必須）。
+  - Route Handler の `ctx.params` は Promise。型は `RouteContext<'/path/[id]'>`。本アプリは動的セグメントを
+    使っていないので該当箇所は無いが、足すなら await すること。
+  - `middleware` は `proxy` に改名・非推奨。本アプリは middleware/proxy を使わず、各 Route Handler 先頭で
+    `await auth()` してゲートする（better-sqlite3 が node ランタイム必須なので各ルートに `export const
+    runtime = "nodejs"`）。
+  - 詳細は `node_modules/next/dist/docs/01-app/02-guides/upgrading/version-16.md`。新規コード前に読むこと。
+- React 19.2 / TypeScript 5。DB: better-sqlite3（ネイティブ）+ Drizzle ORM（`drizzle-kit generate` で
+  `drizzle/` に SQL 生成、起動時 `migrate()` で自動適用）。`next.config.ts` の `serverExternalPackages` に
+  better-sqlite3 を入れてバンドル除外している。
+- **DB クライアントは遅延初期化**（`lib/db/index.ts` の Proxy）。import 時ではなく最初のクエリ時に SQLite を
+  開く。これで `next build` 中にビルド成果物ディレクトリへ DB を作る副作用を防いでいる。
 
-## ファイル構成
+## データモデル（`lib/db/schema.ts`）
 
-```
-main.py             FastAPI: OAuth + Calendar/Tasks API プロキシ（マルチアカウント）
-static/index.html   月/週/日カレンダー + タスクUI + 詳細モーダル（依存なし）
-requirements.txt
-Dockerfile / .env.example / .gitignore
-README.md           セットアップ手順
-client_secret.json  Google 発行（gitignore 済み・コミット禁止）
-tokens/<email>.json アカウントごとのトークン（gitignore 済み・コミット禁止）
-```
+`accounts`(email PK, 暗号化トークン), `calendars`, `events`(startMs/endMs を範囲クエリ用に保持),
+`tasklists`, `tasks`。mirror 系は全部 `syncedAt` / `deletedAt`（ソフト削除）を持つ。`tasks` だけ
+local-only 列（`dueTime` / `remindAt` / `sortOrder`）を持つ。
 
-## API エンドポイント（main.py）
-
-書き込み系は `account`（所有アカウントのメール）必須。POST/PATCH は body に、DELETE は query に入れる。
+## API（すべて `await auth()` でゲート、`runtime=nodejs`）
 
 | メソッド | パス | 用途 |
 |---|---|---|
-| GET | `/login` | OAuth 開始（再実行で別アカウントを追加接続） |
-| GET | `/oauth2callback` | state 照合→トークン交換→`tokens/<email>.json` 保存 |
-| GET | `/api/status` | 認証状態 + 接続アカウント一覧（色付き） |
-| GET | `/api/accounts` | 接続アカウント一覧 |
-| DELETE | `/api/accounts/{email}` | アカウント切断（トークン削除） |
-| GET | `/api/calendars` | 全アカウントのカレンダー一覧（`account`・色付き） |
-| GET | `/api/events?timeMin&timeMax` | 全アカウント×全カレンダーをマージした予定 |
-| POST | `/api/events` | 予定作成（body: account, calendarId） |
-| PATCH | `/api/events/{calendarId}/{eventId}` | 予定更新（body: account） |
-| DELETE | `/api/events/{calendarId}/{eventId}?account` | 予定削除 |
-| GET | `/api/tasklists` | 全アカウントのタスクリスト一覧（`account`） |
-| GET | `/api/tasks?account&tasklist` | タスク一覧（`parent` 付き＝サブタスク） |
-| POST | `/api/tasks` | タスク作成（body: account, tasklist） |
-| PATCH | `/api/tasks/{tasklist}/{taskId}` | タスク更新（body: account・完了切替含む） |
-| DELETE | `/api/tasks/{tasklist}/{taskId}?account` | タスク削除 |
+| GET | `/api/status` | ログイン状態 + 接続アカウント |
+| GET/DELETE | `/api/accounts` | 接続アカウント一覧 / 切断（`?email`） |
+| GET | `/api/connect/google`,`/api/connect/callback` | 追加アカウントの OAuth |
+| GET | `/api/calendars` | ミラーから全カレンダー |
+| GET | `/api/events?timeMin&timeMax` | calendars+events を同期→窓内を返す |
+| POST/PATCH/DELETE | `/api/events` | 作成/更新/削除（識別子は body、DELETE は query） |
+| GET | `/api/tasks` | tasklists+tasks を同期→`{lists,tasks}` を返す |
+| POST/PATCH/DELETE | `/api/tasks` | 作成/更新/削除。`dueTime` は local-only で別扱い |
 
-イベントは詳細表示用に読み取り専用フィールドも返す: `attendees`（応答状況付き）, `meet`,
-`attachments`, `organizer`, `htmlLink`, `recurring`。
-スコープ: `calendar`, `tasks`, `openid`, `userinfo.email`。
+`/api/events` は calendars+events のみ同期（`syncAllEvents`）。tasks は `/api/tasks` 側で同期。二重同期回避のため。
 
-## 既知の制約・落とし穴
+## セキュリティ
 
-- **Google Tasks の期限は日付のみ**（API が時刻を持てない）。2026-06 に公式 REST リファレンスで
-  再確認済み: "the time portion of the timestamp is discarded … It isn't possible to read or write
-  the time that a task is due via the API."。Tasks アプリ/カレンダー UI 上は時刻付きにできるが、
-  公開 API v1 はそれを露出しない。**時刻が要る「やること」は Task ではなく Calendar イベントで作る**のが
-  現実解。フロントの期限入力にもこの旨を明記済み。
-- **OAuth「テスト」状態だと refresh token が7日で失効。** 常用するなら同意画面を「本番（公開）」に。
-  未審査でも本人アカウントは警告画面の「続行」で通る。
-- `/api/events` は **全アカウント × 全カレンダー** をループして取得するので、アカウント/カレンダー数に
-  比例して API 呼び出しが増える。さらに `list_accounts()` がリクエスト毎にトークンを読み（必要なら
-  refresh して再保存）走る。個人用途では許容範囲。重くなったら calendarList とサービスのキャッシュ余地あり。
-- イベント PATCH のパスは `{calendar_id:path}` で greedy マッチ。calendar id に `@` は入るが
-  スラッシュは通常入らない前提。`account` はパスに入れず body/query に分離した（greedy マッチとの衝突回避）。
-- 期限切れ/取り消し済みトークンのアカウントは `list_accounts()` で握りつぶしてスキップする。
-  全体を 500 にしないため。切れているアカウントは UI に出ない＝再ログインが必要。
+`next.config.ts` の `headers()` で CSP / nosniff / Referrer-Policy / X-Frame-Options を全レスポンスに付与。
+CSP の `frame-ancestors` は `FRAME_ANCESTORS` 環境変数で可変（ダッシュボード埋め込み用）。CSP は inline の
+都合で `script-src`/`style-src` に `'unsafe-inline'` を許容している（残課題: nonce 化）。
 
-## 起動
+## 落とし穴
 
-```bash
-pip install -r requirements.txt
-python main.py            # http://localhost:8765
-```
+- 同期は **アカウント数 × カレンダー数** に比例して Google API を叩く。`/api/events` のたびに同期する
+  （即時整合性優先）。重くなったらバックグラウンド同期＋DB 即読みに切り替える余地あり。
+- 期限切れ/取消トークンのアカウントは同期で握りつぶしてスキップ（`syncAllEvents` の try/catch）。UI に出ない＝
+  再ログインが必要。
+- 予定の編集後は「その予定の前後1日」を `syncEvents` で再取得してミラーを更新している（単一行 upsert の
+  共通マッパを切らずに済ませるため）。
 
-Google Cloud 側の準備（API 有効化・OAuth クライアント作成・client_secret.json 配置）は README 参照。
-現状、開発者は API 有効化と本番公開・初回ログインまで完了済みの想定。
+## 動作確認状況
 
-## 環境変数
+ビルド（`next build`）・型チェック・起動・認証ゲート・セキュリティヘッダ・マイグレーション SQL 適用・
+トークン暗号化のラウンドトリップは確認済み。**未確認**＝実際の Google OAuth ログイン以降（複数アカウント
+接続・同期・予定/タスクの読み書き・タスク時刻の保存）。ブラウザで一度通すこと。
 
-| 変数 | 既定 | 用途 |
-|---|---|---|
-| `PORT` | 8765 | ポート |
-| `HOST` | **127.0.0.1** | 待ち受け。LAN/Tailscale は `0.0.0.0` を明示（旧既定から変更） |
-| `BASE_URL` | http://localhost:8765 | OAuth コールバック基底 URL。Tunnel 越しは公開 https |
-| `CLIENT_SECRETS` | client_secret.json | クライアント機密パス |
-| `TOKENS_DIR` | tokens | アカウントごとトークンの保存ディレクトリ |
-| `TOKEN_PATH` | token.json | 旧・単一トークンの移行元（初回のみ参照） |
-| `ALLOWED_EMAILS` | （空＝無効） | 設定時、Cloudflare Access の identity ヘッダがこの一覧に無いと 403 |
-| `FRAME_ANCESTORS` | `'self'` | CSP の iframe 埋め込み許可元（ダッシュボード埋め込み用） |
+## 次の候補（要相談）
 
-## 公開（Cloudflare Tunnel + Access）
-
-採用方針: **Cloudflare Pages へは載せない**（FastAPI 常駐＋ファイル状態は Workers で動かない）。
-Proxmox 上で本アプリを `127.0.0.1` で動かし、`cloudflared` トンネルで公開 https を張り、
-Cloudflare Access（Zero Trust）で前段認証する。これでコード無改修・公開 HTTPS・認証付きになり、
-#6 のダッシュボードの1コンポーネントとして残せる。多層防御として `ALLOWED_EMAILS` を併用し、
-ポートを直接外に晒さない（`HOST=127.0.0.1`）ことでヘッダ偽装を防ぐ。README の「公開」節参照。
-
-## 次の候補（未着手・優先度は要相談）
-
-- ドラッグで予定を移動・リサイズ（現状はモーダル編集のみ）
-- カレンダーごとの表示オン/オフ・絞り込み（アカウント別フィルタも）
-- タスクの並べ替え（ドラッグ）／サブタスクの作成（現状は表示のみ）
-- Cloudflare Access の JWT（`Cf-Access-Jwt-Assertion`）検証への格上げ（現状はメールヘッダ照合）
-- 別プロジェクト（Proxmox 上の個人統合アシスタント）への組み込み: `/api/*` は account 付きで
-  再利用しやすい形になった。埋め込みは `FRAME_ANCESTORS` をダッシュボード origin に設定。
-
-## 作業の進め方（開発者の好み）
-
-- 過剰な修飾は不要。対等な批評を優先し、最善解を出す。
-- 情報が足りないときは推論で埋めず、不足点を端的に挙げて質問する。
-- 数式・アルゴリズムは大道具を避け簡単な処理を好む。技巧的な箇所は途中を明記。
+- バックグラウンド同期（cron/Route）＋ DB 即読みでの体感速度改善。
+- カレンダー/アカウント別の表示オン・オフ、ドラッグ移動・リサイズ。
+- リマインダ（`remindAt` 列は用意済み）・サブタスク作成（現状は表示のみ）。
+- Cloudflare Access の JWT（`Cf-Access-Jwt-Assertion`）検証への格上げ。
+- 旧 FastAPI 版（`../`）の撤去（このアプリが安定したら）。
