@@ -168,6 +168,17 @@ local-only 列（`dueTime` / `remindAt` / `sortOrder` / `kanban`、加えて見�
 
 ## セキュリティ
 
+**公開時の認証は3層**（Cloudflare Tunnel で公開する前提。素の Tunnel 直公開はしない）:
+1. **Cloudflare Access**（エッジ）— Zero Trust でメール許可リスト。未認証はそもそも到達しない。
+2. **オリジン側の Access 強制**（`proxy.ts`、2026-07-03 実装）— `CF_ACCESS_TEAM_DOMAIN` +
+   `CF_ACCESS_AUD` を設定すると、全リクエストに有効な `Cf-Access-Jwt-Assertion`（JWKS 検証・
+   iss/aud 一致）を要求し、無ければ 403。**Tunnel の経路ミスや LAN からポート直叩きでも弾ける**。
+   env 未設定（dev）は完全に無効。模擬 JWKS で 403/403/200 の3ケース検証済み。
+3. **アプリ自身のログイン** — Auth.js の Google ログイン＋`ALLOWED_EMAILS`。全 API ルートが
+   `await auth()` でゲート済みなので、仮に上2層が破れても API は使えない。
+Proxmox では `next start` を **127.0.0.1 にバインド**して cloudflared だけが届く構成を推奨
+（`PORT=3000 HOSTNAME=127.0.0.1 npm run start`）。
+
 `next.config.ts` の `headers()` で CSP / nosniff / Referrer-Policy / X-Frame-Options を全レスポンスに付与。
 CSP の `frame-ancestors` は `FRAME_ANCESTORS` 環境変数で可変（ダッシュボード埋め込み用）。CSP は inline の
 都合で `script-src`/`style-src` に `'unsafe-inline'` を許容している（残課題: nonce 化）。
@@ -213,7 +224,6 @@ CSP の `frame-ancestors` は `FRAME_ANCESTORS` 環境変数で可変（ダッ�
 
 - バックグラウンド同期（cron/Route）＋ DB 即読みでの体感速度改善。
 - カレンダー/アカウント別の表示オン・オフ、ドラッグ移動・リサイズ。
-- Cloudflare Access の JWT（`Cf-Access-Jwt-Assertion`）検証への格上げ。
 - サブタスクの並べ替え・親付け替え（`tasks.move`。作成/表示/完了は実装済み、下記参照）。
 
 ## サブタスク（GitHub の sub-issue 風、2026-07-03 実装）
