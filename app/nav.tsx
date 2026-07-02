@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { CalendarIcon, KanbanIcon, BotIcon, MoonIcon, CheckCircleIcon } from "./icons";
 
 /**
  * App-wide navigation: an Ubuntu-style icon dock on the left (desktop) and a
@@ -9,10 +10,10 @@ import { usePathname } from "next/navigation";
  */
 
 const TABS = [
-  { href: "/", icon: "📅", label: "予定表" },
-  { href: "/board", icon: "📋", label: "ボード" },
-  { href: "/ai", icon: "🤖", label: "AIアシスタント" },
-  { href: "/logs", icon: "📓", label: "記録・ナレッジ" },
+  { href: "/", Icon: CalendarIcon, label: "予定表" },
+  { href: "/board", Icon: KanbanIcon, label: "ボード" },
+  { href: "/ai", Icon: BotIcon, label: "AIアシスタント" },
+  { href: "/logs", Icon: MoonIcon, label: "睡眠記録" },
 ];
 
 export function Dock() {
@@ -20,14 +21,14 @@ export function Dock() {
   return (
     <aside className="dock desktop-only">
       <Link href="/" className="dbrand" title="Kairos">K</Link>
-      {TABS.map((t) => (
+      {TABS.map(({ href, Icon, label }) => (
         <Link
-          key={t.href}
-          href={t.href}
-          data-label={t.label}
-          className={`dicon${path === t.href ? " on" : ""}`}
+          key={href}
+          href={href}
+          data-label={label}
+          className={`dicon${path === href ? " on" : ""}`}
         >
-          {t.icon}
+          <Icon size={24} />
         </Link>
       ))}
     </aside>
@@ -48,18 +49,18 @@ export function MobileTabs({ pane, onPane }: {
     <nav className="mobiletabs">
       {local ? (
         <>
-          <button className={pane === "cal" ? "on" : ""} onClick={() => onPane!("cal")}><span>📅</span>予定表</button>
-          <button className={pane === "tasks" ? "on" : ""} onClick={() => onPane!("tasks")}><span>✓</span>タスク</button>
+          <button className={pane === "cal" ? "on" : ""} onClick={() => onPane!("cal")}><CalendarIcon size={22} />予定表</button>
+          <button className={pane === "tasks" ? "on" : ""} onClick={() => onPane!("tasks")}><CheckCircleIcon size={22} />タスク</button>
         </>
       ) : (
         <>
-          <Link href="/"><span>📅</span>予定表</Link>
-          <Link href="/?pane=tasks"><span>✓</span>タスク</Link>
+          <Link href="/"><CalendarIcon size={22} />予定表</Link>
+          <Link href="/?pane=tasks"><CheckCircleIcon size={22} />タスク</Link>
         </>
       )}
-      <Link href="/board" className={path === "/board" ? "on" : ""}><span>📋</span>ボード</Link>
-      <Link href="/ai" className={path === "/ai" ? "on" : ""}><span>🤖</span>AI</Link>
-      <Link href="/logs" className={path === "/logs" ? "on" : ""}><span>📓</span>記録</Link>
+      <Link href="/board" className={path === "/board" ? "on" : ""}><KanbanIcon size={22} />ボード</Link>
+      <Link href="/ai" className={path === "/ai" ? "on" : ""}><BotIcon size={22} />AI</Link>
+      <Link href="/logs" className={path === "/logs" ? "on" : ""}><MoonIcon size={22} />睡眠</Link>
     </nav>
   );
 }

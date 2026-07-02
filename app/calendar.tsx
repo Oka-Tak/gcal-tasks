@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { signIn, signOut } from "next-auth/react";
 import { ChatPane } from "./chat-pane";
 import { Dock, MobileTabs } from "./nav";
+import { BotIcon, ClockIcon, PlusIcon, RefreshIcon } from "./icons";
 
 /* ------------------------------------------------------------------ types */
 type Account = { email: string; name?: string | null; picture?: string | null; color?: string | null };
@@ -328,8 +329,8 @@ export default function Calendar() {
           ))}
         </div>
         <div className="spacer" />
-        <button className="btn btn-primary desktop-only" onClick={() => openEvent()}>+ 予定</button>
-        <button className="btn" onClick={reload} title="再読み込み">⟳</button>
+        <button className="btn btn-primary desktop-only" onClick={() => openEvent()}><PlusIcon size={15} />予定</button>
+        <button className="btn" onClick={reload} title="再読み込み"><RefreshIcon size={16} /></button>
         <button className="who" onClick={() => setModal({ kind: "accounts" })} title="アカウント">
           {accounts.map((a) => <span key={a.email} className="dot" style={{ background: a.color || "#888" }} />)}
           <span className="who-label">{accounts.length === 1 ? accounts[0].email : accounts.length ? `${accounts.length} アカウント` : "接続なし"}</span>
@@ -349,7 +350,7 @@ export default function Calendar() {
       </div>
       </div>
 
-      <button className="fab" onClick={() => openEvent()} title="予定を追加">＋</button>
+      <button className="fab" onClick={() => openEvent()} title="予定を追加"><PlusIcon size={26} /></button>
       <MobileTabs pane={pane} onPane={setPane} />
 
       {modal?.kind === "detail" && <DetailModal ev={modal.ev} calendars={calendars} accounts={accounts} onClose={() => setModal(null)} onEdit={() => openEvent(modal.ev)} />}
@@ -688,8 +689,8 @@ function TaskModal({ draft, set, onSave, onDelete, onClose, onChat, onEstimate }
     <Scrim onClose={onClose}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
         <h3 style={{ margin: 0, flex: 1 }}>タスクを編集</h3>
-        <button className="btn" onClick={onEstimate} title="AIに所要時間の見積りと作業枠の配置を提案させる">⏱ AIで見積り</button>
-        <button className="btn" onClick={onChat} title="このタスクをAIに相談">🤖 AIに相談</button>
+        <button className="btn" onClick={onEstimate} title="AIに所要時間の見積りと作業枠の配置を提案させる"><ClockIcon size={15} />AIで見積り</button>
+        <button className="btn" onClick={onChat} title="このタスクをAIに相談"><BotIcon size={15} />AIに相談</button>
       </div>
       <div className="field"><label>タイトル</label><input value={draft.title} onChange={(e) => set({ title: e.target.value })} /></div>
       <div className="row2">
@@ -781,7 +782,7 @@ function ChatModal({ taskKey, taskTitle, autoMessage, onClose, onExecuted }: {
   return (
     <Scrim onClose={onClose} wide>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-        <h3 style={{ margin: 0, flex: 1 }}>🤖 AI相談 — {taskTitle || "タスク"}</h3>
+        <h3 style={{ margin: 0, flex: 1, display: "flex", alignItems: "center", gap: 7 }}><BotIcon size={17} />AI相談 — {taskTitle || "タスク"}</h3>
         <button className="btn" onClick={onClose}>閉じる</button>
       </div>
       <ChatPane

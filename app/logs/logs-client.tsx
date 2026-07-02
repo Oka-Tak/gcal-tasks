@@ -196,7 +196,7 @@ export default function LogsClient() {
       <div className="main">
       <div className="topbar">
         <span className="brand">Kairos</span>
-        <div className="range">記録 / ナレッジ</div>
+        <div className="range">睡眠記録</div>
         <div className="spacer" />
       </div>
 

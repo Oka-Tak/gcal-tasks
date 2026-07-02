@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { BotIcon, PersonIcon, TerminalIcon } from "./icons";
 
 /**
  * The chat surface shared by the /ai tab (topic threads) and the per-task
- * modal. Renders the message/proposal timeline and the input bar with
- * agent + model pickers; proposals execute only via the approve buttons.
+ * modal. Slack-style flat rows (avatar / name / time / text); proposals render
+ * as attachment cards and execute only via the approve buttons.
  */
 
 export type ChatMsg = { id: string; role: string; content: string | null; agent?: string | null; createdAt?: number | null };
@@ -15,8 +16,8 @@ export type Proposal = {
 };
 
 const PROPOSAL_KIND: Record<string, string> = {
-  create_task: "📝 タスク作成", update_task: "✏️ タスク更新",
-  create_event: "📅 予定作成", update_event: "🔁 予定変更",
+  create_task: "タスク作成", update_task: "タスク更新",
+  create_event: "予定作成", update_event: "予定変更",
 };
 
 const WD = ["日", "月", "火", "水", "木", "金", "土"];
@@ -37,6 +38,23 @@ async function api(method: string, url: string, body?: unknown) {
   });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
+}
+
+function fmtTime(at?: number | null): string {
+  if (!at) return "";
+  const d = new Date(at);
+  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return d.toDateString() === new Date().toDateString()
+    ? hm
+    : `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
+}
+
+function Avatar({ role, agent }: { role: string; agent?: string | null }) {
+  return (
+    <div className={`cavatar ${role}${agent === "codex" ? " codex" : ""}`}>
+      {role === "user" ? <PersonIcon size={19} /> : agent === "codex" ? <TerminalIcon size={19} /> : <BotIcon size={19} />}
+    </div>
+  );
 }
 
 function fmtWhen(v: unknown): string {
@@ -203,14 +221,20 @@ export function ChatPane({ thread, taskKey, autoMessage, emptyHint, onExecuted, 
         )}
         {timeline.map((t) =>
           t.msg ? (
-            <div key={t.key} className={`msg ${t.msg.role}`}>
-              <div className="bub">{t.msg.content}</div>
-              {t.msg.role === "assistant" && t.msg.agent && <div className="who2">{t.msg.agent}</div>}
+            <div key={t.key} className="crow">
+              <Avatar role={t.msg.role} agent={t.msg.agent} />
+              <div className="cbody">
+                <div className="chead">
+                  <span className="cname">{t.msg.role === "user" ? "あなた" : (t.msg.agent ?? "AI")}</span>
+                  <span className="ctime">{fmtTime(t.msg.createdAt)}</span>
+                </div>
+                <div className="ctext">{t.msg.content}</div>
+              </div>
             </div>
           ) : t.prop ? (
             <div key={t.key} className={`proposal ${t.prop.status}`}>
               <div className="phead">
-                <span className="pkind">{PROPOSAL_KIND[t.prop.kind] ?? `⚠️ ${t.prop.kind}`}</span>
+                <span className="pkind">{PROPOSAL_KIND[t.prop.kind] ?? t.prop.kind}</span>
                 <span className="psum">{t.prop.summary}</span>
               </div>
               {proposalDetail(t.prop) && <div className="pdetail">{proposalDetail(t.prop)}</div>}
@@ -224,15 +248,23 @@ export function ChatPane({ thread, taskKey, autoMessage, emptyHint, onExecuted, 
                 </div>
               ) : (
                 <div className={`pstat ${t.prop.status}`}>
-                  {t.prop.status === "done" ? "✅ 実行済み"
-                    : t.prop.status === "rejected" ? "❌ 却下しました"
-                    : `⚠️ ${t.prop.error || "エラー"}`}
+                  {t.prop.status === "done" ? "✓ 実行済み"
+                    : t.prop.status === "rejected" ? "× 却下しました"
+                    : `！ ${t.prop.error || "エラー"}`}
                 </div>
               )}
             </div>
           ) : null,
         )}
-        {busy && <div className="msg assistant"><div className="bub thinking">考え中…</div></div>}
+        {busy && (
+          <div className="crow">
+            <Avatar role="assistant" agent={agent} />
+            <div className="cbody">
+              <div className="chead"><span className="cname">{agent}</span></div>
+              <div className="ctext thinking">考え中…</div>
+            </div>
+          </div>
+        )}
         <div ref={endRef} />
       </div>
       {pendings.length > 1 && (

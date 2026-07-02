@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Dock, MobileTabs } from "../nav";
+import { RefreshIcon } from "../icons";
 
 /**
  * Kanban board over Google Tasks. Columns are LOCAL-ONLY (`tasks.kanban`,
@@ -115,7 +116,7 @@ export default function BoardClient() {
         <span className="brand">Kairos</span>
         <div className="range">ボード</div>
         <div className="spacer" />
-        <button className="btn" onClick={() => void load()} title="再読み込み">⟳</button>
+        <button className="btn" onClick={() => void load()} title="再読み込み"><RefreshIcon size={16} /></button>
       </div>
       {err && <p className="errline" style={{ margin: "8px 12px" }}>{err}</p>}
       <div className="board">

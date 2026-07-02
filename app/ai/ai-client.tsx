@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ChatPane } from "../chat-pane";
 import { Dock, MobileTabs } from "../nav";
+import { PlusIcon } from "../icons";
 
 /**
  * The AI assistant tab: topic threads in a Floorp-workspace-style sidebar
@@ -46,7 +47,7 @@ export default function AiClient() {
         <span className="brand">Kairos</span>
         <div className="range">AIアシスタント</div>
         <div className="spacer" />
-        <button className="btn" onClick={newThread}>＋ 新しい話題</button>
+        <button className="btn" onClick={newThread}><PlusIcon size={15} />新しい話題</button>
       </div>
       <div className="aiwrap">
         <nav className="threads">

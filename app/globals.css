@@ -263,24 +263,30 @@ textarea.mono,input.mono{font-family:var(--mono);font-size:12px}
 .logcard .lnote{font-size:12px;margin-top:4px;white-space:pre-wrap;word-break:break-word}
 
 /* chat modal — a flex column so the log grows and the input stays put */
-.modal.wide{width:560px;display:flex;flex-direction:column;height:min(84vh,780px)}
+.modal.wide{width:600px;display:flex;flex-direction:column;height:min(84vh,780px)}
 .chatlog{border:1px solid var(--line);border-radius:11px;background:var(--bg);
-     padding:10px;flex:1;min-height:200px;overflow-y:auto;
-     display:flex;flex-direction:column;gap:8px}
-.msg{display:flex;flex-direction:column;max-width:82%}
-.msg.user{align-self:flex-end;align-items:flex-end}
-.msg.assistant{align-self:flex-start;align-items:flex-start}
-.msg .bub{padding:8px 12px;border-radius:13px;font-size:13px;line-height:1.55;
-     white-space:pre-wrap;word-break:break-word}
-.msg.user .bub{background:var(--accent);color:var(--accent-ink);border-bottom-right-radius:4px}
-.msg.assistant .bub{background:var(--panel);border:1px solid var(--line);
-     color:var(--ink);border-bottom-left-radius:4px}
-.msg .bub.thinking{color:var(--muted);font-style:italic}
-.msg .who2{font-size:10px;color:var(--muted);margin-top:2px;font-family:var(--mono)}
-/* agent proposal cards (approve / reject) */
-.proposal{align-self:stretch;border:1px solid var(--line);border-left:3px solid var(--accent);
+     padding:8px 6px;flex:1;min-height:200px;overflow-y:auto;
+     display:flex;flex-direction:column;gap:2px}
+/* Slack/Discord-style flat message rows */
+.crow{display:flex;gap:10px;padding:6px 8px;border-radius:9px;align-items:flex-start}
+.crow:hover{background:var(--line2)}
+.cavatar{width:34px;height:34px;border-radius:9px;flex:none;display:flex;
+     align-items:center;justify-content:center;margin-top:1px}
+.cavatar.user{background:var(--accent);color:var(--accent-ink)}
+.cavatar.assistant{background:#233041;color:var(--accent)}
+.cavatar.assistant.codex{color:#6ea8fe}
+.cbody{flex:1;min-width:0}
+.chead{display:flex;align-items:baseline;gap:8px}
+.cname{font-weight:700;font-size:13px}
+.ctime{font-size:10.5px;color:var(--muted);font-family:var(--mono)}
+.ctext{font-size:13.5px;line-height:1.6;white-space:pre-wrap;word-break:break-word;margin-top:1px}
+.ctext.thinking{color:var(--muted);font-style:italic}
+/* agent proposal cards — Slack-attachment style, indented under the message */
+.proposal{align-self:stretch;margin-left:52px;border:1px solid var(--line);
+     border-left:3px solid var(--accent);
      border-radius:11px;background:var(--panel);padding:10px 12px;
      display:flex;flex-direction:column;gap:6px}
+.proposal .pstat.done{color:var(--accent)}
 .proposal.error{border-left-color:var(--danger)}
 .proposal.done,.proposal.rejected{opacity:.65}
 .proposal .phead{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
@@ -384,10 +390,10 @@ textarea.mono,input.mono{font-family:var(--mono);font-size:12px}
   .mobiletabs{display:flex;flex:none;background:var(--panel2);border-top:1px solid var(--line);
        padding:4px 6px calc(4px + env(safe-area-inset-bottom))}
   .mobiletabs button,.mobiletabs a{flex:1;display:flex;flex-direction:column;align-items:center;
-       gap:1px;background:none;border:none;font-size:10px;color:var(--muted);
+       gap:3px;background:none;border:none;font-size:10px;color:var(--muted);
        padding:5px 0;border-radius:11px;text-decoration:none;min-height:48px;justify-content:center}
   .mobiletabs .on{color:var(--accent);background:var(--accent-soft)}
-  .mobiletabs span{font-size:17px;line-height:1.15}
+  .proposal{margin-left:0}
 
   /* calendar squeeze */
   .dh{padding:4px 2px}
