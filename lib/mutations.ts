@@ -16,6 +16,7 @@ export interface TaskWrite {
   account: string;
   tasklist: string;
   id?: string;
+  parent?: string | null; // create as a subtask of this task (Google-native, 1 level only)
   // Google-owned fields:
   title?: string;
   notes?: string | null;
@@ -69,6 +70,7 @@ function applyTaskLocal(account: string, tasklist: string, id: string, b: TaskWr
 export async function createTask(b: TaskWrite): Promise<{ id: string }> {
   const created = await tasksFor(b.account).tasks.insert({
     tasklist: b.tasklist,
+    parent: b.parent ?? undefined, // Google-native subtask (sub-issue)
     requestBody: taskRequestBody(b),
   });
   await syncTasks(b.account, b.tasklist);

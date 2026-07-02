@@ -48,9 +48,11 @@ export const ACTION_SPEC = `## 出力形式（厳守）
 1. タスク作成
    {"kind":"create_task","summary":"…","account":"…","tasklist":"…","title":"…",
     "notes":"…","due":"YYYY-MM-DD","dueTime":"HH:MM","estimatedMin":30,
-    "remindAt":"2026-07-03T08:00:00+09:00"}
-   - notes / due / dueTime / estimatedMin / remindAt は任意。dueTime は due とセットでのみ有効。
+    "remindAt":"2026-07-03T08:00:00+09:00","parent":"<親タスクのid>"}
+   - notes / due / dueTime / estimatedMin / remindAt / parent は任意。dueTime は due とセットでのみ有効。
    - remindAt はスマホへのプッシュ通知（リマインダー）の時刻。
+   - parent に既存タスクの id を入れると**サブタスク**になる。大きなタスクの分解を頼まれたら
+     これで親の下にぶら下げる（階層は1段のみ。サブタスクの下には作れない）。
 2. タスク更新
    {"kind":"update_task","summary":"…","account":"…","tasklist":"…","id":"…", <変更するフィールドのみ>}
    - 変更可: title, notes, status("needsAction"|"completed"), due("YYYY-MM-DD"),
@@ -166,6 +168,13 @@ function validateCreateTask(r: Raw): Valid | Invalid {
     const ms = remindMs(r.remindAt);
     if (ms == null) return bad("remindAt は RFC3339 の日時です");
     payload.remindAt = ms;
+  }
+  if (r.parent != null) {
+    const p = reqStr(r.parent);
+    const row = p ? taskRow(account, tasklist, p) : null;
+    if (!row) return bad(`親タスクが見つかりません: ${r.parent}`);
+    if (row.parent) return bad("サブタスクの下にサブタスクは作れません（1階層のみ）");
+    payload.parent = p;
   }
   return { ok: true, kind: "create_task", summary: "", payload };
 }

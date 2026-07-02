@@ -357,6 +357,7 @@ function openTasks(): string {
         dueTime: t.dueTime,
         estimatedMin: t.estimatedMin,
         kanban: t.kanban ?? "todo",
+        parent: t.parent ?? undefined, // set = this is a subtask
       }),
     )
     .join("\n");

@@ -181,6 +181,15 @@ a{color:var(--accent)}
 .task.done .title{color:var(--done);text-decoration:line-through}
 .task .due{font-size:11px;color:var(--muted);font-family:var(--mono)}
 .task .due.over{color:var(--danger)}
+.task.sub{margin-left:26px;border-left:2px solid var(--line);padding-left:8px}
+/* sub-issue section in the task modal (GitHub-style) */
+.subsec{margin-bottom:12px}
+.subhead{display:flex;align-items:baseline;gap:8px;margin-bottom:4px}
+.subhead label{font-size:11px;color:var(--muted);text-transform:uppercase;
+     letter-spacing:.05em;font-family:var(--mono)}
+.subprog{font-size:11px;font-family:var(--mono);color:var(--muted)}
+.subbar{height:5px;border-radius:3px;background:var(--line2);overflow:hidden;margin:2px 0 6px}
+.subfill{height:100%;background:var(--accent);border-radius:3px;transition:width .2s}
 .addrow{display:flex;gap:6px;padding:6px 4px 10px}
 .addrow input{flex:1;border:1px solid var(--line);border-radius:8px;padding:8px 10px;
      font-size:13px;background:var(--panel2);color:var(--ink)}
@@ -351,6 +360,9 @@ textarea.mono,input.mono{font-family:var(--mono);font-size:12px}
      padding-right:58px}
 .bdue{font-family:var(--mono)}
 .bdue.over{color:var(--danger);font-weight:700}
+.bsubs{font-family:var(--mono);border:1px solid var(--line);border-radius:999px;
+     padding:0 7px;font-size:10.5px}
+.bsubs.all{color:var(--accent);border-color:rgba(45,224,167,.4)}
 .blist{margin-left:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:45%}
 .bmove{position:absolute;top:7px;right:7px;display:flex;gap:3px}
 .bmove button{border:1px solid var(--line);background:var(--btn);border-radius:7px;

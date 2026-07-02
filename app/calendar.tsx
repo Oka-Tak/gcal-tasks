@@ -365,6 +365,14 @@ export default function Calendar() {
         <TaskModal
           draft={modal.draft}
           set={(patch) => setModal((m) => (m?.kind === "task" ? { ...m, draft: { ...m.draft, ...patch } } : m))}
+          subtasks={tasks.filter((t) => t.account === modal.draft.account && t.tasklist === modal.draft.tasklist && t.parent === modal.draft.id)}
+          onToggleSub={(t) => void toggleDone(t)}
+          onOpenSub={(t) => openTask(t)}
+          onAddSub={(title) => {
+            const d = modal.draft;
+            if (!title.trim() || !d.id) return;
+            void api("POST", "/api/tasks", { account: d.account, tasklist: d.tasklist, title: title.trim(), parent: d.id }).then(reloadTasks);
+          }}
           onSave={saveTask} onDelete={deleteTask} onClose={() => setModal(null)}
           onChat={() => {
             const d = modal.draft;
@@ -558,28 +566,31 @@ function TasksRail(props: {
     <div className="rail">
       <h2>タスク</h2>
       {lists.map((l) => {
-        const items = tasks.filter((t) => t.account === l.account && t.tasklist === l.id)
-          .sort((a, b) => Number(a.status === "completed") - Number(b.status === "completed"));
+        const items = tasks.filter((t) => t.account === l.account && t.tasklist === l.id);
+        const byDone = (a: Task, b: Task) => Number(a.status === "completed") - Number(b.status === "completed");
+        const parents = items.filter((t) => !t.parent).sort(byDone);
+        const kidsOf = (id: string) => items.filter((t) => t.parent === id).sort(byDone);
+        const row = (t: Task, sub: boolean) => {
+          const done = t.status === "completed";
+          const dd = taskDueDate(t);
+          const over = dd && !done && dd < now;
+          return (
+            <div key={`${t.account}:${t.id}`} className={`task${done ? " done" : ""}${sub ? " sub" : ""}`}>
+              <div className={`cbox${done ? " on" : ""}`} onClick={() => onToggle(t)} />
+              <div className="body2" onClick={() => onOpen(t)}>
+                <div className="title">{t.title || "(無題)"}</div>
+                {dd && <div className={`due${over ? " over" : ""}`}>{dd.getMonth() + 1}/{dd.getDate()}{t.dueTime ? ` ${t.dueTime}` : ""}</div>}
+              </div>
+            </div>
+          );
+        };
         return (
           <div key={`${l.account}|${l.id}`} className="tlist">
             <div className="name">
               {multi && <span className="dot" style={{ background: acctColor(l.account) }} />}
               {l.title}
             </div>
-            {items.map((t) => {
-              const done = t.status === "completed";
-              const dd = taskDueDate(t);
-              const over = dd && !done && dd < now;
-              return (
-                <div key={`${t.account}:${t.id}`} className={`task${done ? " done" : ""}`}>
-                  <div className={`cbox${done ? " on" : ""}`} onClick={() => onToggle(t)} />
-                  <div className="body2" onClick={() => onOpen(t)}>
-                    <div className="title">{t.title || "(無題)"}</div>
-                    {dd && <div className={`due${over ? " over" : ""}`}>{dd.getMonth() + 1}/{dd.getDate()}{t.dueTime ? ` ${t.dueTime}` : ""}</div>}
-                  </div>
-                </div>
-              );
-            })}
+            {parents.map((t) => [row(t, false), ...kidsOf(t.id).map((c) => row(c, true))])}
             <AddRow onAdd={(v) => onAdd(l, v)} />
           </div>
         );
@@ -588,12 +599,12 @@ function TasksRail(props: {
   );
 }
 
-function AddRow({ onAdd }: { onAdd: (v: string) => void }) {
+function AddRow({ onAdd, placeholder }: { onAdd: (v: string) => void; placeholder?: string }) {
   const [v, setV] = useState("");
   const go = () => { onAdd(v); setV(""); };
   return (
     <div className="addrow">
-      <input placeholder="タスクを追加" value={v} onChange={(e) => setV(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") go(); }} />
+      <input placeholder={placeholder ?? "タスクを追加"} value={v} onChange={(e) => setV(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") go(); }} />
       <button onClick={go}>+</button>
     </div>
   );
@@ -681,10 +692,13 @@ function EventModal({ modal, calendars, set, onSave, onDelete, onClose }: {
   );
 }
 
-function TaskModal({ draft, set, onSave, onDelete, onClose, onChat, onEstimate }: {
-  draft: TaskDraft; set: (p: Partial<TaskDraft>) => void; onSave: () => void; onDelete: () => void; onClose: () => void; onChat: () => void; onEstimate: () => void;
+function TaskModal({ draft, set, subtasks, onToggleSub, onOpenSub, onAddSub, onSave, onDelete, onClose, onChat, onEstimate }: {
+  draft: TaskDraft; set: (p: Partial<TaskDraft>) => void;
+  subtasks: Task[]; onToggleSub: (t: Task) => void; onOpenSub: (t: Task) => void; onAddSub: (title: string) => void;
+  onSave: () => void; onDelete: () => void; onClose: () => void; onChat: () => void; onEstimate: () => void;
 }) {
   const levels = ["", "1", "2", "3", "4", "5"];
+  const subDone = subtasks.filter((s) => s.status === "completed").length;
   return (
     <Scrim onClose={onClose}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
@@ -700,6 +714,29 @@ function TaskModal({ draft, set, onSave, onDelete, onClose, onChat, onEstimate }
       <div className="hint">時刻は Kairos のみで保持（Google Tasks は日付しか持てない）。スマホの Google には出ません。</div>
       <div className="field"><label>リマインド通知（ntfy）</label><input type="datetime-local" value={draft.remind} onChange={(e) => set({ remind: e.target.value })} /></div>
       <div className="field"><label>メモ</label><textarea value={draft.notes} onChange={(e) => set({ notes: e.target.value })} /></div>
+      {draft.id && (
+        <div className="subsec">
+          <div className="subhead">
+            <label>サブタスク</label>
+            {subtasks.length > 0 && <span className="subprog">{subDone} / {subtasks.length}</span>}
+          </div>
+          {subtasks.length > 0 && (
+            <div className="subbar"><div className="subfill" style={{ width: `${Math.round((subDone / subtasks.length) * 100)}%` }} /></div>
+          )}
+          {subtasks.map((s) => {
+            const done = s.status === "completed";
+            return (
+              <div key={`${s.account}:${s.id}`} className={`task${done ? " done" : ""}`}>
+                <div className={`cbox${done ? " on" : ""}`} onClick={() => onToggleSub(s)} />
+                <div className="body2" onClick={() => onOpenSub(s)}>
+                  <div className="title">{s.title || "(無題)"}</div>
+                </div>
+              </div>
+            );
+          })}
+          <AddRow onAdd={onAddSub} placeholder="サブタスクを追加（GitHubのsub-issue風）" />
+        </div>
+      )}
       <div className="row2">
         <div className="field"><label>見積り（分）</label><input type="number" min={1} value={draft.est} onChange={(e) => set({ est: e.target.value })} /></div>
         <div className="field"><label>実績（分）</label><input type="number" min={1} value={draft.actual} onChange={(e) => set({ actual: e.target.value })} /></div>

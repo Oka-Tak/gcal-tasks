@@ -13,7 +13,7 @@ import { RefreshIcon } from "../icons";
 type Task = {
   account: string; tasklist: string; id: string; title: string; notes?: string | null;
   status: string; due?: string | null; dueTime?: string | null;
-  estimatedMin?: number | null; kanban?: string | null;
+  estimatedMin?: number | null; kanban?: string | null; parent?: string | null;
 };
 type ListMeta = { account: string; id: string; title: string | null };
 
@@ -96,8 +96,12 @@ export default function BoardClient() {
 
   const now = new Date(); now.setHours(0, 0, 0, 0);
 
+  // Sub-issues don't get their own cards; they roll up into the parent's progress chip.
+  const subsOf = (t: Task) =>
+    tasks.filter((x) => x.account === t.account && x.tasklist === t.tasklist && x.parent === t.id);
+
   const columns = COLS.map((col) => {
-    let items = tasks.filter((t) => colOf(t) === col);
+    let items = tasks.filter((t) => !t.parent && colOf(t) === col);
     items.sort((a, b) => (a.due ?? "9999").localeCompare(b.due ?? "9999") || a.title.localeCompare(b.title));
     let hidden = 0;
     if (col === "done") {
@@ -149,7 +153,13 @@ export default function BoardClient() {
                     <div className="btitle">{t.title || "(無題)"}</div>
                     <div className="bmeta">
                       {dd && <span className={`bdue${over ? " over" : ""}`}>{dd.getMonth() + 1}/{dd.getDate()}{t.dueTime ? ` ${t.dueTime}` : ""}</span>}
-                      {t.estimatedMin != null && <span className="best">⏱ {t.estimatedMin}分</span>}
+                      {t.estimatedMin != null && <span className="best">{t.estimatedMin}分</span>}
+                      {(() => {
+                        const subs = subsOf(t);
+                        if (!subs.length) return null;
+                        const d2 = subs.filter((s) => s.status === "completed").length;
+                        return <span className={`bsubs${d2 === subs.length ? " all" : ""}`}>{d2}/{subs.length}</span>;
+                      })()}
                       <span className="blist">{listTitle(t)}</span>
                     </div>
                     <div className="bmove">
