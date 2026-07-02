@@ -23,6 +23,19 @@ export const env = {
   encKey: process.env.KAIROS_ENC_KEY ?? "",
   // SQLite file. Other tools (Proxmox Claude Code) can read this directly.
   dbPath: process.env.KAIROS_DB ?? "./kairos.db",
+  // Local data dir for uploads (screenshots) etc. Kept out of git and off the web.
+  dataDir: process.env.KAIROS_DATA ?? "./data",
+  // ntfy push notifications (optional; unset = notifications off).
+  ntfyUrl: (process.env.KAIROS_NTFY_URL ?? "").replace(/\/$/, ""), // e.g. https://ntfy.sh or self-hosted
+  ntfyTopic: process.env.KAIROS_NTFY_TOPIC ?? "", // treat as a secret (anyone who knows it can read/send)
+  ntfyToken: process.env.KAIROS_NTFY_TOKEN ?? "", // access token for a protected self-hosted server
+  // Local CLI agents (must be on PATH or given as absolute paths).
+  claudeBin: process.env.KAIROS_CLAUDE_BIN ?? "claude",
+  codexBin: process.env.KAIROS_CODEX_BIN ?? "codex",
+  // Default model alias for claude calls (vision-capable). Override per call.
+  claudeModel: process.env.KAIROS_CLAUDE_MODEL ?? "sonnet",
+  // Hard ceiling for a single agent invocation.
+  agentTimeoutMs: Number(process.env.KAIROS_AGENT_TIMEOUT_MS ?? 180000),
 };
 
 export const GOOGLE_SCOPES = [
