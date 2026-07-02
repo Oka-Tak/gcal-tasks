@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { MobileTabs, TopTabs } from "../nav";
+import { Dock, MobileTabs } from "../nav";
 
 /**
  * Kanban board over Google Tasks. Columns are LOCAL-ONLY (`tasks.kanban`,
@@ -109,9 +109,11 @@ export default function BoardClient() {
 
   return (
     <div className="app">
+      <Dock />
+      <div className="main">
       <div className="topbar">
         <span className="brand">Kairos</span>
-        <TopTabs />
+        <div className="range">ボード</div>
         <div className="spacer" />
         <button className="btn" onClick={() => void load()} title="再読み込み">⟳</button>
       </div>
@@ -161,6 +163,7 @@ export default function BoardClient() {
             </div>
           </div>
         ))}
+      </div>
       </div>
       <MobileTabs />
     </div>

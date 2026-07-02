@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { MobileTabs, TopTabs } from "../nav";
+import { Dock, MobileTabs } from "../nav";
 
 /* ------------------------------------------------------------------ types */
 type LogItem = {
@@ -192,9 +192,10 @@ export default function LogsClient() {
 
   return (
     <div className="app">
+      <Dock />
+      <div className="main">
       <div className="topbar">
         <span className="brand">Kairos</span>
-        <TopTabs />
         <div className="range">記録 / ナレッジ</div>
         <div className="spacer" />
       </div>
@@ -346,6 +347,7 @@ export default function LogsClient() {
             );
           })}
         </div>
+      </div>
       </div>
       </div>
       <MobileTabs />

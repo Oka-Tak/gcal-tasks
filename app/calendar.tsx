@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { signIn, signOut } from "next-auth/react";
 import { ChatPane } from "./chat-pane";
-import { MobileTabs, TopTabs } from "./nav";
+import { Dock, MobileTabs } from "./nav";
 
 /* ------------------------------------------------------------------ types */
 type Account = { email: string; name?: string | null; picture?: string | null; color?: string | null };
@@ -309,9 +309,10 @@ export default function Calendar() {
 
   return (
     <div className="app">
+      <Dock />
+      <div className="main">
       <div className="topbar">
         <span className="brand">Kairos</span>
-        <TopTabs />
         <div className="range">{rangeLabel}</div>
         <div className="brk" />
         <div className="nav">
@@ -345,6 +346,7 @@ export default function Calendar() {
           lists={lists} tasks={tasks} multi={accounts.length > 1} acctColor={acctColor}
           onToggle={toggleDone} onOpen={openTask} onAdd={quickAddTask}
         />
+      </div>
       </div>
 
       <button className="fab" onClick={() => openEvent()} title="予定を追加">＋</button>

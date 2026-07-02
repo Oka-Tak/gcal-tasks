@@ -4,27 +4,33 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 /**
- * App-wide navigation: browser-style tabs on desktop (topbar), a persistent
- * bottom tab bar on mobile. Every page renders both — no more back buttons.
+ * App-wide navigation: an Ubuntu-style icon dock on the left (desktop) and a
+ * persistent bottom tab bar on mobile. Every page renders both.
  */
 
 const TABS = [
   { href: "/", icon: "📅", label: "予定表" },
   { href: "/board", icon: "📋", label: "ボード" },
-  { href: "/ai", icon: "🤖", label: "AI" },
-  { href: "/logs", icon: "📓", label: "記録" },
+  { href: "/ai", icon: "🤖", label: "AIアシスタント" },
+  { href: "/logs", icon: "📓", label: "記録・ナレッジ" },
 ];
 
-export function TopTabs() {
+export function Dock() {
   const path = usePathname();
   return (
-    <nav className="toptabs desktop-only">
+    <aside className="dock desktop-only">
+      <Link href="/" className="dbrand" title="Kairos">K</Link>
       {TABS.map((t) => (
-        <Link key={t.href} href={t.href} className={path === t.href ? "on" : ""}>
-          {t.icon} {t.label}
+        <Link
+          key={t.href}
+          href={t.href}
+          data-label={t.label}
+          className={`dicon${path === t.href ? " on" : ""}`}
+        >
+          {t.icon}
         </Link>
       ))}
-    </nav>
+    </aside>
   );
 }
 

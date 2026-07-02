@@ -57,13 +57,25 @@ a{color:var(--accent)}
 .seg button:hover{background:#212d3b}
 .seg button.on{background:var(--accent);color:var(--accent-ink);font-weight:700}
 .spacer{flex:1}
-/* desktop page tabs (browser-style) */
-.toptabs{display:flex;border:1px solid var(--line);border-radius:10px;overflow:hidden}
-.toptabs a{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;min-height:36px;
-     font-size:13px;color:var(--muted);text-decoration:none;border-left:1px solid var(--line)}
-.toptabs a:first-child{border-left:none}
-.toptabs a:hover{background:#212d3b;color:var(--ink)}
-.toptabs a.on{background:var(--accent-soft);color:var(--accent);font-weight:700}
+/* Ubuntu-style left icon dock (desktop) */
+.dock{width:62px;flex:none;display:flex;flex-direction:column;align-items:center;gap:6px;
+     padding:12px 0;background:#080b10;border-right:1px solid var(--line);z-index:30}
+.dock .dbrand{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;
+     justify-content:center;font-family:var(--mono);font-weight:800;font-size:21px;
+     color:var(--accent-ink);background:var(--accent);text-decoration:none;margin-bottom:10px}
+.dock .dicon{position:relative;width:48px;height:48px;border-radius:13px;display:flex;
+     align-items:center;justify-content:center;font-size:23px;text-decoration:none;
+     transition:background .12s}
+.dock .dicon:hover{background:var(--line2)}
+.dock .dicon.on{background:var(--accent-soft)}
+.dock .dicon.on::before{content:"";position:absolute;left:-7px;top:13px;width:4px;height:22px;
+     border-radius:2px;background:var(--accent)}
+.dock .dicon::after{content:attr(data-label);position:absolute;left:58px;top:50%;
+     transform:translateY(-50%);background:var(--panel);border:1px solid var(--line);
+     padding:5px 11px;border-radius:8px;font-size:12px;color:var(--ink);white-space:nowrap;
+     opacity:0;pointer-events:none;transition:opacity .12s;z-index:60;
+     box-shadow:0 4px 14px rgba(0,0,0,.4)}
+.dock .dicon:hover::after{opacity:1}
 /* mobile floating action button (＋予定) */
 .fab{display:none}
 .who{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12.5px;
@@ -71,8 +83,9 @@ a{color:var(--accent)}
 .who:hover{background:var(--line2)}
 .dot{width:9px;height:9px;border-radius:50%;flex:none;display:inline-block}
 
-/* layout */
-.app{display:flex;flex-direction:column;height:100vh;height:100dvh}
+/* layout: [dock | main(topbar/content)] on desktop, column with bottom tabs on mobile */
+.app{display:flex;height:100vh;height:100dvh}
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
 .topbar{flex:none;flex-wrap:wrap}
 .body{display:flex;flex:1;min-height:0}
 .cal{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--panel)}
@@ -344,6 +357,8 @@ textarea.mono,input.mono{font-family:var(--mono);font-size:12px}
 /* ============================================================ mobile (≤720px) */
 @media (max-width:720px){
   :root{--gutter:42px}
+  .app{flex-direction:column}
+  .main{flex:1;min-height:0}
   /* topbar: row 1 = brand + range + reload + account, row 2 = nav + view switch */
   .topbar{gap:6px 8px;padding:8px 10px}
   .brk{display:block;flex-basis:100%;height:0}

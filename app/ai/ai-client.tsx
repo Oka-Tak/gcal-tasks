@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { ChatPane } from "../chat-pane";
-import { MobileTabs, TopTabs } from "../nav";
+import { Dock, MobileTabs } from "../nav";
 
 /**
  * The AI assistant tab: topic threads in a Floorp-workspace-style sidebar
@@ -40,9 +40,11 @@ export default function AiClient() {
 
   return (
     <div className="app">
+      <Dock />
+      <div className="main">
       <div className="topbar">
         <span className="brand">Kairos</span>
-        <TopTabs />
+        <div className="range">AIアシスタント</div>
         <div className="spacer" />
         <button className="btn" onClick={newThread}>＋ 新しい話題</button>
       </div>
@@ -64,6 +66,7 @@ export default function AiClient() {
             onActivity={() => void loadThreads()}
           />
         </main>
+      </div>
       </div>
       <MobileTabs />
     </div>
