@@ -6,7 +6,8 @@ import { tasklists, tasks } from "@/lib/db/schema";
 import { tasksFor } from "@/lib/google";
 import { listAccounts } from "@/lib/accounts";
 import { syncTasklists, syncTasks } from "@/lib/sync";
-import { taskRequestBody, serializeTask } from "@/lib/serialize";
+import { serializeTask } from "@/lib/serialize";
+import { createTask, updateTask } from "@/lib/mutations";
 
 export const runtime = "nodejs";
 
@@ -42,56 +43,21 @@ export async function POST(req: NextRequest) {
   if (!(await requireUser()))
     return Response.json({ detail: "unauthenticated" }, { status: 401 });
   const body = await req.json();
-  const { account, tasklist } = body;
-  if (!account || !tasklist)
+  if (!body.account || !body.tasklist)
     return Response.json({ detail: "account/tasklist required" }, { status: 400 });
 
-  const created = await tasksFor(account).tasks.insert({
-    tasklist,
-    requestBody: taskRequestBody(body),
-  });
-  await syncTasks(account, tasklist);
-  if (body.dueTime !== undefined && created.data.id) {
-    db.update(tasks)
-      .set({ dueTime: body.dueTime || null })
-      .where(
-        and(
-          eq(tasks.account, account),
-          eq(tasks.tasklist, tasklist),
-          eq(tasks.googleId, created.data.id),
-        ),
-      )
-      .run();
-  }
-  return Response.json({ id: created.data.id });
+  const created = await createTask(body);
+  return Response.json({ id: created.id });
 }
 
 export async function PATCH(req: NextRequest) {
   if (!(await requireUser()))
     return Response.json({ detail: "unauthenticated" }, { status: 401 });
   const body = await req.json();
-  const { account, tasklist, id } = body;
-  if (!account || !tasklist || !id)
+  if (!body.account || !body.tasklist || !body.id)
     return Response.json({ detail: "account/tasklist/id required" }, { status: 400 });
 
-  // Only call Google when a Google-owned field changed; dueTime is local-only.
-  const hasGoogle = ["title", "notes", "status", "due"].some((k) => k in body);
-  if (hasGoogle) {
-    await tasksFor(account).tasks.patch({
-      tasklist,
-      task: id,
-      requestBody: taskRequestBody(body),
-    });
-  }
-  await syncTasks(account, tasklist); // refresh Google fields, preserve local-only
-  if ("dueTime" in body) {
-    db.update(tasks)
-      .set({ dueTime: body.dueTime || null })
-      .where(
-        and(eq(tasks.account, account), eq(tasks.tasklist, tasklist), eq(tasks.googleId, id)),
-      )
-      .run();
-  }
+  await updateTask(body);
   return Response.json({ ok: true });
 }
 
