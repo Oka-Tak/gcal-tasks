@@ -3,10 +3,13 @@ import type { NextConfig } from "next";
 // Origin(s) allowed to embed Kairos in an <iframe> (Proxmox dashboard). Default self.
 const frameAncestors = process.env.FRAME_ANCESTORS ?? "'self'";
 
+// React dev mode needs eval() for debugging features; production never does.
+const scriptExtra = process.env.NODE_ENV === "development" ? " 'unsafe-eval'" : "";
+
 const csp = [
   "default-src 'self'",
   // Next injects inline bootstrap scripts; styles use inline style attributes.
-  "script-src 'self' 'unsafe-inline'",
+  `script-src 'self' 'unsafe-inline'${scriptExtra}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: https:",
   "connect-src 'self'",

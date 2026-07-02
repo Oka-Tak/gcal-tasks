@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { signIn, signOut } from "next-auth/react";
+import { ChatPane } from "./chat-pane";
+import { MobileTabs, TopTabs } from "./nav";
 
 /* ------------------------------------------------------------------ types */
 type Account = { email: string; name?: string | null; picture?: string | null; color?: string | null };
@@ -18,6 +20,8 @@ type Ev = {
 type Task = {
   account: string; tasklist: string; id: string; title: string; notes?: string | null;
   status: string; due?: string | null; dueTime?: string | null; parent?: string | null;
+  estimatedMin?: number | null; actualMin?: number | null;
+  difficulty?: number | null; energy?: number | null; remindAt?: number | null;
 };
 type ListMeta = { account: string; id: string; title: string | null };
 
@@ -27,6 +31,7 @@ type Modal =
   | { kind: "detail"; ev: Ev }
   | { kind: "event"; isNew: boolean; ev?: Ev; draft: EventDraft }
   | { kind: "task"; isNew: boolean; draft: TaskDraft }
+  | { kind: "chat"; taskKey: string; taskTitle: string; autoMessage?: string }
   | { kind: "accounts" }
   | null;
 
@@ -37,6 +42,8 @@ type EventDraft = {
 type TaskDraft = {
   account: string; tasklist: string; id?: string; title: string;
   due: string; dueTime: string; notes: string; done: boolean;
+  est: string; actual: string; difficulty: string; energy: string; // planning flywheel (as input strings)
+  remind: string; // datetime-local — ntfy push reminder
 };
 
 /* ------------------------------------------------------------ date helpers */
@@ -55,6 +62,12 @@ function toRFC3339(d: Date) {
   return `${ymd(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}:00${s}${pad(Math.abs(off) / 60 | 0)}:${pad(Math.abs(off) % 60)}`;
 }
 const enc = encodeURIComponent;
+// Google's pastel event colors need dark text; saturated ones need light.
+function inkFor(bg: string | null | undefined): string {
+  if (!bg || !/^#[0-9a-fA-F]{6}$/.test(bg)) return "#fff";
+  const r = parseInt(bg.slice(1, 3), 16), g = parseInt(bg.slice(3, 5), 16), b = parseInt(bg.slice(5, 7), 16);
+  return 0.299 * r + 0.587 * g + 0.114 * b > 150 ? "#0b1014" : "#fff";
+}
 const taskDueDate = (t: Task) => (t.due ? new Date(`${t.due.slice(0, 10)}T00:00:00`) : null);
 const minsOf = (hhmm: string) => { const [h, m] = hhmm.split(":").map(Number); return h * 60 + (m || 0); };
 
@@ -94,6 +107,7 @@ export default function Calendar() {
   const [lists, setLists] = useState<ListMeta[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [modal, setModal] = useState<Modal>(null);
+  const [pane, setPane] = useState<"cal" | "tasks">("cal"); // mobile: which pane is visible
 
   const acctColor = useCallback(
     (email: string) => accounts.find((a) => a.email === email)?.color || "#888",
@@ -107,6 +121,15 @@ export default function Calendar() {
       setAccounts(st.accounts || []);
       setAuthed(!!st.authed);
     })().catch(() => setAuthed(false));
+  }, []);
+
+  // Phones start in day view — a 7-column week is unreadable at 390px.
+  // "/?pane=tasks" (from another page's tab bar) opens the task pane directly.
+  useEffect(() => {
+    // One-time device check on mount; intentional single re-render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (window.matchMedia("(max-width: 720px)").matches) setView("day");
+    if (new URLSearchParams(window.location.search).get("pane") === "tasks") setPane("tasks");
   }, []);
 
   const reloadTasks = useCallback(async () => {
@@ -181,12 +204,16 @@ export default function Calendar() {
     });
   }
   function openTask(t: Task) {
+    const numStr = (n: number | null | undefined) => (n != null ? String(n) : "");
     setModal({
       kind: "task", isNew: false,
       draft: {
         account: t.account, tasklist: t.tasklist, id: t.id, title: t.title,
         due: t.due ? ymd(new Date(t.due.slice(0, 10) + "T00:00:00")) : "",
         dueTime: t.dueTime || "", notes: t.notes || "", done: t.status === "completed",
+        est: numStr(t.estimatedMin), actual: numStr(t.actualMin),
+        difficulty: numStr(t.difficulty), energy: numStr(t.energy),
+        remind: t.remindAt ? localInput(new Date(t.remindAt)) : "",
       },
     });
   }
@@ -216,10 +243,14 @@ export default function Calendar() {
   async function saveTask() {
     if (modal?.kind !== "task") return;
     const d = modal.draft;
+    const num = (s: string) => (s && Number.isFinite(Number(s)) ? Math.round(Number(s)) : null);
     await api("PATCH", "/api/tasks", {
       account: d.account, tasklist: d.tasklist, id: d.id,
       title: d.title, notes: d.notes, due: d.due || null, dueTime: d.dueTime || null,
       status: d.done ? "completed" : "needsAction",
+      estimatedMin: num(d.est), actualMin: num(d.actual),
+      difficulty: num(d.difficulty), energy: num(d.energy),
+      remindAt: d.remind ? Date.parse(d.remind) : null,
     });
     setModal(null); await reloadTasks();
   }
@@ -277,10 +308,12 @@ export default function Calendar() {
     : (() => { const ds = viewDays(view, anchor); const a = ds[0], b = ds[6]; return `${a.getFullYear()}年${a.getMonth() + 1}月${a.getDate()}日 – ${b.getMonth() + 1}月${b.getDate()}日`; })();
 
   return (
-    <div>
+    <div className="app">
       <div className="topbar">
         <span className="brand">Kairos</span>
+        <TopTabs />
         <div className="range">{rangeLabel}</div>
+        <div className="brk" />
         <div className="nav">
           <button onClick={() => step(-1)} title="前へ">‹</button>
           <button onClick={() => setAnchor(new Date())}>今日</button>
@@ -294,15 +327,15 @@ export default function Calendar() {
           ))}
         </div>
         <div className="spacer" />
-        <button className="btn btn-primary" onClick={() => openEvent()}>+ 予定</button>
+        <button className="btn btn-primary desktop-only" onClick={() => openEvent()}>+ 予定</button>
         <button className="btn" onClick={reload} title="再読み込み">⟳</button>
         <button className="who" onClick={() => setModal({ kind: "accounts" })} title="アカウント">
           {accounts.map((a) => <span key={a.email} className="dot" style={{ background: a.color || "#888" }} />)}
-          <span>{accounts.length === 1 ? accounts[0].email : accounts.length ? `${accounts.length} アカウント` : "接続なし"}</span>
+          <span className="who-label">{accounts.length === 1 ? accounts[0].email : accounts.length ? `${accounts.length} アカウント` : "接続なし"}</span>
         </button>
       </div>
 
-      <div className="body">
+      <div className={`body${pane === "tasks" ? " show-tasks" : ""}`}>
         <div className="cal">
           {view === "month"
             ? <MonthView anchor={anchor} events={events} tasksDue={tasksDue} acctColor={acctColor} onDay={goToDay} onEvent={openDetail} onTask={openTask} />
@@ -313,6 +346,9 @@ export default function Calendar() {
           onToggle={toggleDone} onOpen={openTask} onAdd={quickAddTask}
         />
       </div>
+
+      <button className="fab" onClick={() => openEvent()} title="予定を追加">＋</button>
+      <MobileTabs pane={pane} onPane={setPane} />
 
       {modal?.kind === "detail" && <DetailModal ev={modal.ev} calendars={calendars} accounts={accounts} onClose={() => setModal(null)} onEdit={() => openEvent(modal.ev)} />}
       {modal?.kind === "event" && (
@@ -327,7 +363,21 @@ export default function Calendar() {
           draft={modal.draft}
           set={(patch) => setModal((m) => (m?.kind === "task" ? { ...m, draft: { ...m.draft, ...patch } } : m))}
           onSave={saveTask} onDelete={deleteTask} onClose={() => setModal(null)}
+          onChat={() => {
+            const d = modal.draft;
+            if (d.id) setModal({ kind: "chat", taskKey: `${d.account}|${d.tasklist}|${d.id}`, taskTitle: d.title });
+          }}
+          onEstimate={() => {
+            const d = modal.draft;
+            if (d.id) setModal({
+              kind: "chat", taskKey: `${d.account}|${d.tasklist}|${d.id}`, taskTitle: d.title,
+              autoMessage: "このタスクの所要時間を、私の見積り実績とライフログ（調子）から見積もって、estimatedMin を更新する提案を出して。あわせて期限までの空き時間から作業枠の候補を予定作成の提案として1〜2個出して。理由も一言添えて。",
+            });
+          }}
         />
+      )}
+      {modal?.kind === "chat" && (
+        <ChatModal taskKey={modal.taskKey} taskTitle={modal.taskTitle} autoMessage={modal.autoMessage} onClose={() => setModal(null)} onExecuted={() => void reload()} />
       )}
       {modal?.kind === "accounts" && (
         <AccountsModal accounts={accounts} onClose={() => setModal(null)} onDisconnect={disconnect} onSignOut={() => signOut()} />
@@ -392,7 +442,7 @@ function TimeView(props: {
             {events.filter((e) => e.allDay).map((e) => {
               const s = new Date(`${e.start}T00:00:00`), en = new Date(`${e.end}T00:00:00`);
               if (!(d >= s && d < en)) return null;
-              return <div key={`${e.account}:${e.id}`} className="chip" style={{ background: e.color || "#4285f4" }} onClick={() => onEvent(e)}>{e.summary}</div>;
+              return <div key={`${e.account}:${e.id}`} className="chip" style={{ background: e.color || "#4285f4", color: inkFor(e.color || "#4285f4") }} onClick={() => onEvent(e)}>{e.summary}</div>;
             })}
             {tasksDue(d).filter((t) => !t.dueTime).map((t) => (
               <div key={`${t.account}:${t.id}`} className={`chip task${t.status === "completed" ? " done" : ""}`} onClick={() => onTask(t)}>
@@ -427,6 +477,7 @@ function TimeView(props: {
                       left: `calc(${col / ncols * 100}% + 1px)`,
                       width: `calc(${100 / ncols}% - 3px)`,
                       background: item.isTask ? undefined : item.color,
+                      color: item.isTask ? undefined : inkFor(item.color),
                     }}
                     onClick={(ev) => { ev.stopPropagation(); item.onClick(); }}
                   >
@@ -467,12 +518,12 @@ function MonthView(props: {
           const items: Item[] = [];
           events.filter((e) => e.allDay).forEach((e) => {
             const s = new Date(`${e.start}T00:00:00`), en = new Date(`${e.end}T00:00:00`);
-            if (d >= s && d < en) items.push({ key: `a:${e.account}:${e.id}`, sort: -1, node: <div className="mchip" style={{ background: e.color || "#4285f4" }} onClick={(ev) => { ev.stopPropagation(); onEvent(e); }}>{e.summary}</div> });
+            if (d >= s && d < en) items.push({ key: `a:${e.account}:${e.id}`, sort: -1, node: <div className="mchip" style={{ background: e.color || "#4285f4", color: inkFor(e.color || "#4285f4") }} onClick={(ev) => { ev.stopPropagation(); onEvent(e); }}>{e.summary}</div> });
           });
           events.filter((e) => !e.allDay).forEach((e) => {
             const s = new Date(e.start);
             if (!sameDay(s, d)) return;
-            items.push({ key: `e:${e.account}:${e.id}`, sort: s.getHours() * 60 + s.getMinutes(), node: <div className="mchip" style={{ background: e.color || "#4285f4" }} onClick={(ev) => { ev.stopPropagation(); onEvent(e); }}><span className="mt">{pad(s.getHours())}:{pad(s.getMinutes())}</span>{e.summary}</div> });
+            items.push({ key: `e:${e.account}:${e.id}`, sort: s.getHours() * 60 + s.getMinutes(), node: <div className="mchip" style={{ background: e.color || "#4285f4", color: inkFor(e.color || "#4285f4") }} onClick={(ev) => { ev.stopPropagation(); onEvent(e); }}><span className="mt">{pad(s.getHours())}:{pad(s.getMinutes())}</span>{e.summary}</div> });
           });
           tasksDue(d).forEach((t) => {
             const sort = t.dueTime ? minsOf(t.dueTime) : 1e6;
@@ -546,8 +597,8 @@ function AddRow({ onAdd }: { onAdd: (v: string) => void }) {
 }
 
 /* =================================================================== modals */
-function Scrim({ children, onClose }: { children: ReactNode; onClose: () => void }) {
-  return <div className="scrim" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}><div className="modal">{children}</div></div>;
+function Scrim({ children, onClose, wide }: { children: ReactNode; onClose: () => void; wide?: boolean }) {
+  return <div className="scrim" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}><div className={wide ? "modal wide" : "modal"}>{children}</div></div>;
 }
 
 function fmtAllDay(e: Ev) {
@@ -627,19 +678,42 @@ function EventModal({ modal, calendars, set, onSave, onDelete, onClose }: {
   );
 }
 
-function TaskModal({ draft, set, onSave, onDelete, onClose }: {
-  draft: TaskDraft; set: (p: Partial<TaskDraft>) => void; onSave: () => void; onDelete: () => void; onClose: () => void;
+function TaskModal({ draft, set, onSave, onDelete, onClose, onChat, onEstimate }: {
+  draft: TaskDraft; set: (p: Partial<TaskDraft>) => void; onSave: () => void; onDelete: () => void; onClose: () => void; onChat: () => void; onEstimate: () => void;
 }) {
+  const levels = ["", "1", "2", "3", "4", "5"];
   return (
     <Scrim onClose={onClose}>
-      <h3>タスクを編集</h3>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+        <h3 style={{ margin: 0, flex: 1 }}>タスクを編集</h3>
+        <button className="btn" onClick={onEstimate} title="AIに所要時間の見積りと作業枠の配置を提案させる">⏱ AIで見積り</button>
+        <button className="btn" onClick={onChat} title="このタスクをAIに相談">🤖 AIに相談</button>
+      </div>
       <div className="field"><label>タイトル</label><input value={draft.title} onChange={(e) => set({ title: e.target.value })} /></div>
       <div className="row2">
         <div className="field"><label>期限（日付）</label><input type="date" value={draft.due} onChange={(e) => set({ due: e.target.value })} /></div>
         <div className="field"><label>時刻</label><input type="time" value={draft.dueTime} onChange={(e) => set({ dueTime: e.target.value })} disabled={!draft.due} /></div>
       </div>
       <div className="hint">時刻は Kairos のみで保持（Google Tasks は日付しか持てない）。スマホの Google には出ません。</div>
+      <div className="field"><label>リマインド通知（ntfy）</label><input type="datetime-local" value={draft.remind} onChange={(e) => set({ remind: e.target.value })} /></div>
       <div className="field"><label>メモ</label><textarea value={draft.notes} onChange={(e) => set({ notes: e.target.value })} /></div>
+      <div className="row2">
+        <div className="field"><label>見積り（分）</label><input type="number" min={1} value={draft.est} onChange={(e) => set({ est: e.target.value })} /></div>
+        <div className="field"><label>実績（分）</label><input type="number" min={1} value={draft.actual} onChange={(e) => set({ actual: e.target.value })} /></div>
+      </div>
+      <div className="row2">
+        <div className="field"><label>難易度（1-5）</label>
+          <select value={draft.difficulty} onChange={(e) => set({ difficulty: e.target.value })}>
+            {levels.map((v) => <option key={v} value={v}>{v || "—"}</option>)}
+          </select>
+        </div>
+        <div className="field"><label>エネルギー（1-5）</label>
+          <select value={draft.energy} onChange={(e) => set({ energy: e.target.value })}>
+            {levels.map((v) => <option key={v} value={v}>{v || "—"}</option>)}
+          </select>
+        </div>
+      </div>
+      <div className="hint">完了時に実績（かかった分数）を記録すると、AIの見積りがあなた仕様に較正されていきます。</div>
       <div className="chk" style={{ marginBottom: 12 }}><input type="checkbox" checked={draft.done} onChange={(e) => set({ done: e.target.checked })} /><label style={{ margin: 0 }}>完了</label></div>
       <div className="modal-foot">
         <button className="link-danger" onClick={onDelete}>削除</button>
@@ -654,6 +728,20 @@ function TaskModal({ draft, set, onSave, onDelete, onClose }: {
 function AccountsModal({ accounts, onClose, onDisconnect, onSignOut }: {
   accounts: Account[]; onClose: () => void; onDisconnect: (e: string) => void; onSignOut: () => void;
 }) {
+  const [notify, setNotify] = useState<{ enabled: boolean } | null>(null);
+  const [testMsg, setTestMsg] = useState<string | null>(null);
+  useEffect(() => {
+    api("GET", "/api/notify").then(setNotify).catch(() => setNotify({ enabled: false }));
+  }, []);
+  const sendTest = async () => {
+    setTestMsg("送信中…");
+    try {
+      const r = await fetch("/api/notify", { method: "POST" }).then((x) => x.json());
+      setTestMsg(r.ok ? "送信しました。スマホの ntfy アプリを確認してください。" : `失敗: ${r.error}`);
+    } catch (e) {
+      setTestMsg(`失敗: ${String(e)}`);
+    }
+  };
   return (
     <Scrim onClose={onClose}>
       <h3>アカウント</h3>
@@ -665,12 +753,41 @@ function AccountsModal({ accounts, onClose, onDisconnect, onSignOut }: {
           <button className="link-danger" onClick={() => onDisconnect(a.email)}>切断</button>
         </div>
       ))}
+      <h3 style={{ marginTop: 18 }}>通知（ntfy）</h3>
+      <div className="acct-row">
+        <span className="em" style={{ color: "var(--muted)", fontSize: 12.5 }}>
+          {notify == null ? "確認中…" : notify.enabled
+            ? "設定済み。リマインドはスマホにプッシュされます。"
+            : ".env.local に KAIROS_NTFY_URL / KAIROS_NTFY_TOPIC を設定すると有効になります。"}
+        </span>
+        <button className="btn" disabled={!notify?.enabled} onClick={() => void sendTest()}>テスト送信</button>
+      </div>
+      {testMsg && <p className="hint" style={{ margin: "4px 0 0" }}>{testMsg}</p>}
       <div className="modal-foot" style={{ marginTop: 14 }}>
         <a className="btn btn-primary" href="/api/connect/google">+ アカウントを追加</a>
         <button className="btn" onClick={onSignOut}>サインアウト</button>
         <div className="spacer" />
         <button className="btn" onClick={onClose}>閉じる</button>
       </div>
+    </Scrim>
+  );
+}
+
+function ChatModal({ taskKey, taskTitle, autoMessage, onClose, onExecuted }: {
+  taskKey: string; taskTitle: string; autoMessage?: string; onClose: () => void; onExecuted: () => void;
+}) {
+  return (
+    <Scrim onClose={onClose} wide>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+        <h3 style={{ margin: 0, flex: 1 }}>🤖 AI相談 — {taskTitle || "タスク"}</h3>
+        <button className="btn" onClick={onClose}>閉じる</button>
+      </div>
+      <ChatPane
+        taskKey={taskKey}
+        autoMessage={autoMessage}
+        emptyHint="このタスクについて相談しましょう。例:「どう進めればいい？」「どれくらい時間かかりそう？」"
+        onExecuted={onExecuted}
+      />
     </Scrim>
   );
 }
