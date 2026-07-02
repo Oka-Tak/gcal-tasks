@@ -8,6 +8,34 @@
       "when": 1781583925850,
       "tag": "0000_flashy_black_tarantula",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1781681027982,
+      "tag": "0001_fuzzy_trish_tilby",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1782941531006,
+      "tag": "0002_mighty_emma_frost",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1782944962541,
+      "tag": "0003_fancy_freak",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1782946541960,
+      "tag": "0004_sad_cerebro",
+      "breakpoints": true
     }
   ]
 }

@@ -107,10 +107,116 @@ export const tasks = sqliteTable(
     googleUpdated: text("google_updated"),
     // local-only (never sent to Google):
     dueTime: text("due_time"), // 'HH:MM'
-    remindAt: integer("remind_at"), // epoch ms (future)
+    remindAt: integer("remind_at"), // epoch ms — when to push a reminder (ntfy)
+    remindedAt: integer("reminded_at"), // epoch ms — when the push actually fired (reset on remindAt change)
     sortOrder: integer("sort_order"), // local ordering (future)
+    kanban: text("kanban"), // board column: todo | doing | waiting (null = todo; done = status)
+    // planning flywheel (local-only): the agent estimates, you record actuals.
+    estimatedMin: integer("estimated_min"), // estimated effort in minutes
+    actualMin: integer("actual_min"), // measured actual effort (feeds future estimates)
+    difficulty: integer("difficulty"), // 1-5, your felt difficulty
+    energy: integer("energy"), // 1-5, energy this needs / you had
     syncedAt: integer("synced_at"),
     deletedAt: integer("deleted_at"),
   },
   (t) => [primaryKey({ columns: [t.account, t.tasklist, t.googleId] })],
+);
+
+/**
+ * Life-log / "actuals": what you really did — sleep, meals, work, trips. This is
+ * the knowledge base the planning agent reads to judge how long a task takes for
+ * YOU. Local-only by design (Kairos DB is source of truth; no Google mirror).
+ * Sleep rows are typically created by vision-extracting a Xiaomi watch screenshot.
+ */
+export const logs = sqliteTable(
+  "logs",
+  {
+    id: text("id").primaryKey(), // uuid
+    kind: text("kind").notNull(), // sleep | meal | work | trip | activity | note
+    title: text("title"),
+    note: text("note"),
+    startMs: integer("start_ms"), // epoch ms
+    endMs: integer("end_ms"),
+    tags: text("tags"), // JSON string[] (free-form)
+    metrics: text("metrics"), // JSON object, e.g. {durationMin, quality, deepMin, remMin, kcal}
+    source: text("source"), // screenshot | manual | agent
+    imagePath: text("image_path"), // original upload path (local), if from a screenshot
+    createdAt: integer("created_at"),
+    updatedAt: integer("updated_at"),
+    deletedAt: integer("deleted_at"),
+  },
+  (t) => [index("logs_range").on(t.startMs, t.endMs), index("logs_kind").on(t.kind)],
+);
+
+/**
+ * Agent invocation ledger. Every call to a local CLI agent (claude/codex) is
+ * recorded here so the knowledge trail is durable and readable later (Proxmox
+ * Claude Code). Today routes run agents inline and write the result back; this
+ * table is the seam to move execution to a separate local worker before publishing.
+ */
+export const agentJobs = sqliteTable(
+  "agent_jobs",
+  {
+    id: text("id").primaryKey(), // uuid
+    kind: text("kind").notNull(), // extract-sleep | chat | estimate | schedule
+    agent: text("agent"), // claude | codex
+    status: text("status").notNull(), // queued | running | done | error
+    payload: text("payload"), // JSON input (prompt, image path, etc.)
+    result: text("result"), // JSON output (parsed) or raw text
+    error: text("error"),
+    createdAt: integer("created_at"),
+    startedAt: integer("started_at"),
+    finishedAt: integer("finished_at"),
+  },
+  (t) => [index("agent_jobs_status").on(t.status)],
+);
+
+/**
+ * Agent-proposed actions awaiting human approval. The agent NEVER writes to
+ * Google or the DB directly — chat turns emit proposals, the UI renders them,
+ * and only an explicit human approval executes (prompt-injection guard: content
+ * from calendars/mail/images can at worst produce a visible proposal, not an
+ * action). This is also the seam for the future generalized approval queue
+ * (email drafts, repo fixes enqueue here too).
+ */
+export const proposals = sqliteTable(
+  "proposals",
+  {
+    id: text("id").primaryKey(), // uuid
+    threadId: text("thread_id"), // chats.threadId this came from (null = other source)
+    chatId: text("chat_id"), // the assistant chat turn that carried it
+    jobId: text("job_id"), // agent_jobs id
+    kind: text("kind").notNull(), // create_task | update_task | create_event | update_event
+    summary: text("summary"), // agent's one-line description (display only)
+    payload: text("payload").notNull(), // JSON action arguments (validated on create AND on execute)
+    status: text("status").notNull(), // pending | done | rejected | error
+    result: text("result"), // JSON outcome of execution
+    error: text("error"),
+    createdAt: integer("created_at"),
+    decidedAt: integer("decided_at"),
+  },
+  (t) => [
+    index("proposals_status").on(t.status),
+    index("proposals_thread").on(t.threadId),
+  ],
+);
+
+/**
+ * Per-task (or general) conversations with the agent. The DB — not the CLI's own
+ * --resume session — is the source of truth, so the whole history survives and is
+ * readable by other tools. `taskKey` = "account|tasklist|googleId" (null = general).
+ */
+export const chats = sqliteTable(
+  "chats",
+  {
+    id: text("id").primaryKey(), // uuid
+    threadId: text("thread_id").notNull(), // groups a conversation
+    taskKey: text("task_key"), // "account|tasklist|googleId" or null
+    role: text("role").notNull(), // user | assistant | system
+    content: text("content"),
+    agent: text("agent"), // claude | codex (for assistant turns)
+    jobId: text("job_id"), // link to agent_jobs
+    createdAt: integer("created_at"),
+  },
+  (t) => [index("chats_thread").on(t.threadId)],
 );
