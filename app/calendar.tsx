@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { signIn, signOut } from "next-auth/react";
 import { ChatPane } from "./chat-pane";
+import { AudioUpload } from "./notes/notes-client";
 import { Dock, MobileTabs } from "./nav";
 import { BotIcon, ClockIcon, PlusIcon, RefreshIcon } from "./icons";
 
@@ -25,6 +26,10 @@ type Task = {
   difficulty?: number | null; energy?: number | null; remindAt?: number | null;
 };
 type ListMeta = { account: string; id: string; title: string | null };
+type ActualLog = {
+  id: string; kind: string; title: string | null;
+  startMs: number | null; endMs: number | null;
+};
 
 type View = "month" | "week" | "day";
 
@@ -109,6 +114,8 @@ export default function Calendar() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [modal, setModal] = useState<Modal>(null);
   const [pane, setPane] = useState<"cal" | "tasks">("cal"); // mobile: which pane is visible
+  const [actuals, setActuals] = useState<ActualLog[]>([]); // 裏カレンダー: logs in range
+  const [showActual, setShowActual] = useState(false);
 
   const acctColor = useCallback(
     (email: string) => accounts.find((a) => a.email === email)?.color || "#888",
@@ -131,7 +138,13 @@ export default function Calendar() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     if (window.matchMedia("(max-width: 720px)").matches) setView("day");
     if (new URLSearchParams(window.location.search).get("pane") === "tasks") setPane("tasks");
+    if (localStorage.getItem("kairos-show-actual") === "1") setShowActual(true);
   }, []);
+  const pickActual = (on: boolean) => {
+    setShowActual(on);
+    localStorage.setItem("kairos-show-actual", on ? "1" : "0");
+    if (on && view === "month") setView("week"); // 実績 is a time-grid view
+  };
 
   const reloadTasks = useCallback(async () => {
     const tk = await api("GET", "/api/tasks");
@@ -145,6 +158,8 @@ export default function Calendar() {
       const evs = await api("GET", `/api/events?timeMin=${enc(min.toISOString())}&timeMax=${enc(max.toISOString())}`);
       setEvents(evs);
       setCalendars(await api("GET", "/api/calendars"));
+      const lg = await api("GET", `/api/logs?timeMin=${enc(min.toISOString())}&timeMax=${enc(max.toISOString())}`);
+      setActuals(lg.logs || []);
       await reloadTasks();
       const st = await fetch("/api/status").then((r) => r.json());
       setAccounts(st.accounts || []);
@@ -179,7 +194,12 @@ export default function Calendar() {
   }
   async function quickAddTask(list: ListMeta, title: string) {
     if (!title.trim()) return;
-    await api("POST", "/api/tasks", { account: list.account, tasklist: list.id, title: title.trim() });
+    try {
+      await api("POST", "/api/tasks", { account: list.account, tasklist: list.id, title: title.trim() });
+    } catch (e) {
+      alert(`タスクを追加できませんでした: ${e}`);
+      return;
+    }
     await reloadTasks();
   }
 
@@ -201,6 +221,16 @@ export default function Calendar() {
         summary: ev?.summary || "",
         allDay, start: localInput(start), end: localInput(end),
         location: ev?.location || "", description: ev?.description || "",
+      },
+    });
+  }
+  function openNewTask(l: ListMeta, title = "") {
+    setModal({
+      kind: "task", isNew: true,
+      draft: {
+        account: l.account, tasklist: l.id, title,
+        due: "", dueTime: "", notes: "", done: false,
+        est: "", actual: "", difficulty: "", energy: "", remind: "",
       },
     });
   }
@@ -245,14 +275,25 @@ export default function Calendar() {
     if (modal?.kind !== "task") return;
     const d = modal.draft;
     const num = (s: string) => (s && Number.isFinite(Number(s)) ? Math.round(Number(s)) : null);
-    await api("PATCH", "/api/tasks", {
-      account: d.account, tasklist: d.tasklist, id: d.id,
+    const fields = {
       title: d.title, notes: d.notes, due: d.due || null, dueTime: d.dueTime || null,
-      status: d.done ? "completed" : "needsAction",
       estimatedMin: num(d.est), actualMin: num(d.actual),
       difficulty: num(d.difficulty), energy: num(d.energy),
       remindAt: d.remind ? Date.parse(d.remind) : null,
-    });
+    };
+    try {
+      if (modal.isNew) {
+        await api("POST", "/api/tasks", { ...fields, account: d.account, tasklist: d.tasklist });
+      } else {
+        await api("PATCH", "/api/tasks", {
+          ...fields, account: d.account, tasklist: d.tasklist, id: d.id,
+          status: d.done ? "completed" : "needsAction",
+        });
+      }
+    } catch (e) {
+      alert(`タスクを保存できませんでした: ${e}`);
+      return;
+    }
     setModal(null); await reloadTasks();
   }
   async function deleteTask() {
@@ -292,6 +333,34 @@ export default function Calendar() {
     return out;
   }
 
+  // 裏カレンダー: logs clamped to this day's 0–1440 minute window
+  // (sleep crosses midnight, so one log can paint blocks on two days).
+  function dayActuals(day: Date) {
+    const dayStart = startOfDay(day).getTime();
+    const out: { key: string; color: string; label: string; s: number; e: number; isTask: boolean; done: boolean; onClick: () => void }[] = [];
+    const COLOR: Record<string, string> = {
+      sleep: "#748ffc", work: "#1fae83", activity: "#69db7c",
+      meal: "#f2c14e", trip: "#b197fc", note: "#8a94a3",
+    };
+    const EMOJI: Record<string, string> = {
+      sleep: "😴", meal: "🍙", work: "💻", trip: "🧳", activity: "🏃", note: "📝",
+    };
+    for (const l of actuals) {
+      if (l.startMs == null || l.endMs == null) continue;
+      const s = Math.max(0, Math.round((l.startMs - dayStart) / 60000));
+      const e = Math.min(1440, Math.round((l.endMs - dayStart) / 60000));
+      if (e <= 0 || s >= 1440 || e - s < 5) continue;
+      out.push({
+        key: `${l.id}:${dayStart}`,
+        color: COLOR[l.kind] ?? "#8a94a3",
+        label: `${EMOJI[l.kind] ?? "・"} ${l.title || l.kind}`,
+        s, e: Math.max(e, s + 20), isTask: false, done: false,
+        onClick: () => { window.location.href = "/logs"; },
+      });
+    }
+    return out;
+  }
+
   if (authed === null) return <div className="center"><p>読み込み中…</p></div>;
   if (authed === false) {
     return (
@@ -323,10 +392,14 @@ export default function Calendar() {
         </div>
         <div className="seg">
           {(["month", "week", "day"] as View[]).map((v) => (
-            <button key={v} className={view === v ? "on" : ""} onClick={() => setView(v)}>
+            <button key={v} className={view === v ? "on" : ""} onClick={() => { setView(v); if (v === "month") pickActual(false); }}>
               {v === "month" ? "月" : v === "week" ? "週" : "日"}
             </button>
           ))}
+        </div>
+        <div className="seg" title="表＝Google の予定 / 裏＝実際にやったこと（記録）">
+          <button className={!showActual ? "on" : ""} onClick={() => pickActual(false)}>予定</button>
+          <button className={showActual ? "on" : ""} onClick={() => pickActual(true)}>実績</button>
         </div>
         <div className="spacer" />
         <button className="btn btn-primary desktop-only" onClick={() => openEvent()}><PlusIcon size={15} />予定</button>
@@ -341,11 +414,16 @@ export default function Calendar() {
         <div className="cal">
           {view === "month"
             ? <MonthView anchor={anchor} events={events} tasksDue={tasksDue} acctColor={acctColor} onDay={goToDay} onEvent={openDetail} onTask={openTask} />
-            : <TimeView view={view} anchor={anchor} events={events} tasksDue={tasksDue} dayTimed={dayTimed} onEvent={openDetail} onTask={openTask} onSlot={(d) => openEvent(undefined, d)} />}
+            : <TimeView view={view} anchor={anchor}
+                events={showActual ? [] : events}
+                tasksDue={showActual ? () => [] : tasksDue}
+                dayTimed={showActual ? dayActuals : dayTimed}
+                onEvent={openDetail} onTask={openTask}
+                onSlot={showActual ? () => {} : (d) => openEvent(undefined, d)} />}
         </div>
         <TasksRail
           lists={lists} tasks={tasks} multi={accounts.length > 1} acctColor={acctColor}
-          onToggle={toggleDone} onOpen={openTask} onAdd={quickAddTask}
+          onToggle={toggleDone} onOpen={openTask} onAdd={quickAddTask} onAddDetail={openNewTask}
         />
       </div>
       </div>
@@ -363,6 +441,7 @@ export default function Calendar() {
       )}
       {modal?.kind === "task" && (
         <TaskModal
+          isNew={modal.isNew}
           draft={modal.draft}
           set={(patch) => setModal((m) => (m?.kind === "task" ? { ...m, draft: { ...m.draft, ...patch } } : m))}
           subtasks={tasks.filter((t) => t.account === modal.draft.account && t.tasklist === modal.draft.tasklist && t.parent === modal.draft.id)}
@@ -371,7 +450,9 @@ export default function Calendar() {
           onAddSub={(title) => {
             const d = modal.draft;
             if (!title.trim() || !d.id) return;
-            void api("POST", "/api/tasks", { account: d.account, tasklist: d.tasklist, title: title.trim(), parent: d.id }).then(reloadTasks);
+            void api("POST", "/api/tasks", { account: d.account, tasklist: d.tasklist, title: title.trim(), parent: d.id })
+              .then(reloadTasks)
+              .catch((e) => alert(`サブタスクを追加できませんでした: ${e}`));
           }}
           onSave={saveTask} onDelete={deleteTask} onClose={() => setModal(null)}
           onChat={() => {
@@ -559,53 +640,85 @@ function MonthView(props: {
 function TasksRail(props: {
   lists: ListMeta[]; tasks: Task[]; multi: boolean; acctColor: (e: string) => string;
   onToggle: (t: Task) => void; onOpen: (t: Task) => void; onAdd: (l: ListMeta, title: string) => void;
+  onAddDetail: (l: ListMeta, title: string) => void;
 }) {
-  const { lists, tasks, multi, acctColor, onToggle, onOpen, onAdd } = props;
+  const { lists, tasks, multi, acctColor, onToggle, onOpen, onAdd, onAddDetail } = props;
   const now = startOfDay(new Date());
   return (
     <div className="rail">
       <h2>タスク</h2>
-      {lists.map((l) => {
-        const items = tasks.filter((t) => t.account === l.account && t.tasklist === l.id);
-        const byDone = (a: Task, b: Task) => Number(a.status === "completed") - Number(b.status === "completed");
-        const parents = items.filter((t) => !t.parent).sort(byDone);
-        const kidsOf = (id: string) => items.filter((t) => t.parent === id).sort(byDone);
-        const row = (t: Task, sub: boolean) => {
-          const done = t.status === "completed";
-          const dd = taskDueDate(t);
-          const over = dd && !done && dd < now;
-          return (
-            <div key={`${t.account}:${t.id}`} className={`task${done ? " done" : ""}${sub ? " sub" : ""}`}>
-              <div className={`cbox${done ? " on" : ""}`} onClick={() => onToggle(t)} />
-              <div className="body2" onClick={() => onOpen(t)}>
-                <div className="title">{t.title || "(無題)"}</div>
-                {dd && <div className={`due${over ? " over" : ""}`}>{dd.getMonth() + 1}/{dd.getDate()}{t.dueTime ? ` ${t.dueTime}` : ""}</div>}
-              </div>
-            </div>
-          );
-        };
-        return (
-          <div key={`${l.account}|${l.id}`} className="tlist">
-            <div className="name">
-              {multi && <span className="dot" style={{ background: acctColor(l.account) }} />}
-              {l.title}
-            </div>
-            {parents.map((t) => [row(t, false), ...kidsOf(t.id).map((c) => row(c, true))])}
-            <AddRow onAdd={(v) => onAdd(l, v)} />
-          </div>
-        );
-      })}
+      {lists.map((l) => (
+        <TList
+          key={`${l.account}|${l.id}`}
+          list={l}
+          items={tasks.filter((t) => t.account === l.account && t.tasklist === l.id)}
+          multi={multi} acctColor={acctColor} now={now}
+          onToggle={onToggle} onOpen={onOpen} onAdd={onAdd} onAddDetail={onAddDetail}
+        />
+      ))}
     </div>
   );
 }
 
-function AddRow({ onAdd, placeholder }: { onAdd: (v: string) => void; placeholder?: string }) {
+/** One task list: add row on top, open tasks, completed behind a fold. */
+function TList(props: {
+  list: ListMeta; items: Task[]; multi: boolean; acctColor: (e: string) => string; now: Date;
+  onToggle: (t: Task) => void; onOpen: (t: Task) => void; onAdd: (l: ListMeta, title: string) => void;
+  onAddDetail: (l: ListMeta, title: string) => void;
+}) {
+  const { list: l, items, multi, acctColor, now, onToggle, onOpen, onAdd, onAddDetail } = props;
+  const [showDone, setShowDone] = useState(false);
+  const byDone = (a: Task, b: Task) => Number(a.status === "completed") - Number(b.status === "completed");
+  const parents = items.filter((t) => !t.parent);
+  const active = parents.filter((t) => t.status !== "completed");
+  const done = parents.filter((t) => t.status === "completed");
+  const kidsOf = (id: string) => items.filter((t) => t.parent === id).sort(byDone);
+  const row = (t: Task, sub: boolean) => {
+    const isDone = t.status === "completed";
+    const dd = taskDueDate(t);
+    const over = dd && !isDone && dd < now;
+    return (
+      <div key={`${t.account}:${t.id}`} className={`task${isDone ? " done" : ""}${sub ? " sub" : ""}`}>
+        <div className={`cbox${isDone ? " on" : ""}`} onClick={() => onToggle(t)} />
+        <div className="body2" onClick={() => onOpen(t)}>
+          <div className="title">{t.title || "(無題)"}</div>
+          {dd && <div className={`due${over ? " over" : ""}`}>{dd.getMonth() + 1}/{dd.getDate()}{t.dueTime ? ` ${t.dueTime}` : ""}</div>}
+        </div>
+      </div>
+    );
+  };
+  return (
+    <div className="tlist">
+      <div className="name">
+        {multi && <span className="dot" style={{ background: acctColor(l.account) }} />}
+        {l.title}
+      </div>
+      <AddRow onAdd={(v) => onAdd(l, v)} onDetail={(v) => onAddDetail(l, v)} />
+      {active.map((t) => [row(t, false), ...kidsOf(t.id).map((c) => row(c, true))])}
+      {done.length > 0 && (
+        <>
+          <button className="donetoggle" onClick={() => setShowDone((s) => !s)}>
+            {showDone ? "▾" : "▸"} 完了済み {done.length}件
+          </button>
+          {showDone && done.map((t) => [row(t, false), ...kidsOf(t.id).map((c) => row(c, true))])}
+        </>
+      )}
+    </div>
+  );
+}
+
+function AddRow({ onAdd, onDetail, placeholder }: {
+  onAdd: (v: string) => void; onDetail?: (v: string) => void; placeholder?: string;
+}) {
   const [v, setV] = useState("");
   const go = () => { onAdd(v); setV(""); };
   return (
     <div className="addrow">
       <input placeholder={placeholder ?? "タスクを追加"} value={v} onChange={(e) => setV(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") go(); }} />
-      <button onClick={go}>+</button>
+      {onDetail && (
+        <button onClick={() => { onDetail(v); setV(""); }} title="期限・時刻・通知などを付けて追加">詳細</button>
+      )}
+      <button onClick={go} title="タイトルだけで追加">+</button>
     </div>
   );
 }
@@ -624,6 +737,47 @@ function fmtTimed(e: Ev) {
   const t = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
   const date = `${s.getMonth() + 1}/${s.getDate()} (${WD[s.getDay()]})`;
   return sameDay(s, en) ? `${date} ${t(s)}–${t(en)}` : `${date} ${t(s)} – ${en.getMonth() + 1}/${en.getDate()} ${t(en)}`;
+}
+
+/** The event's notes: list + audio upload (transcribe→summarize pipeline). */
+function EventNotes({ ev }: { ev: Ev }) {
+  const eventKey = `${ev.account}|${ev.calendarId}|${ev.id}`;
+  const eventLabel = `${ev.summary} ${ev.allDay ? fmtAllDay(ev) : fmtTimed(ev)}`;
+  const [items, setItems] = useState<{ id: string; title: string; status: string; hasAudio: boolean }[]>([]);
+
+  const reload = useCallback(async () => {
+    const r = await api("GET", `/api/notes?eventKey=${enc(eventKey)}`);
+    setItems(r.notes || []);
+  }, [eventKey]);
+
+  useEffect(() => {
+    // fetch-then-set — false positive for this rule.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void reload().catch(() => {});
+  }, [reload]);
+
+  // poll while the pipeline runs so the status label updates in place
+  useEffect(() => {
+    if (!items.some((n) => n.status === "transcribing" || n.status === "summarizing")) return;
+    const t = setInterval(() => void reload().catch(() => {}), 5000);
+    return () => clearInterval(t);
+  }, [items, reload]);
+
+  return (
+    <div className="det-row"><span className="k">ノート</span><span className="v">
+      {items.map((n) => (
+        <div key={n.id}>
+          <a href={`/notes?open=${n.id}`}>
+            {n.hasAudio ? "🎙" : "📝"} {n.title}
+            {n.status === "transcribing" ? "（文字起こし中…）"
+              : n.status === "summarizing" ? "（ノート作成中…）"
+              : n.status === "error" ? "（エラー）" : ""}
+          </a>
+        </div>
+      ))}
+      <AudioUpload compact eventKey={eventKey} eventLabel={eventLabel} onStarted={() => void reload()} />
+    </span></div>
+  );
 }
 
 function DetailModal({ ev, calendars, accounts, onClose, onEdit }: { ev: Ev; calendars: Cal[]; accounts: Account[]; onClose: () => void; onEdit: () => void }) {
@@ -649,6 +803,7 @@ function DetailModal({ ev, calendars, accounts, onClose, onEdit }: { ev: Ev; cal
             {ev.attachments.map((a, i) => <div key={i}><a href={a.url} target="_blank" rel="noopener noreferrer">{a.title || a.url}</a></div>)}
           </span></div>
         )}
+        <EventNotes ev={ev} />
       </div>
       <div className="modal-foot" style={{ marginTop: 14 }}>
         {ev.htmlLink && <a className="btn" href={ev.htmlLink} target="_blank" rel="noopener noreferrer">Google で開く</a>}
@@ -692,8 +847,8 @@ function EventModal({ modal, calendars, set, onSave, onDelete, onClose }: {
   );
 }
 
-function TaskModal({ draft, set, subtasks, onToggleSub, onOpenSub, onAddSub, onSave, onDelete, onClose, onChat, onEstimate }: {
-  draft: TaskDraft; set: (p: Partial<TaskDraft>) => void;
+function TaskModal({ isNew, draft, set, subtasks, onToggleSub, onOpenSub, onAddSub, onSave, onDelete, onClose, onChat, onEstimate }: {
+  isNew: boolean; draft: TaskDraft; set: (p: Partial<TaskDraft>) => void;
   subtasks: Task[]; onToggleSub: (t: Task) => void; onOpenSub: (t: Task) => void; onAddSub: (title: string) => void;
   onSave: () => void; onDelete: () => void; onClose: () => void; onChat: () => void; onEstimate: () => void;
 }) {
@@ -702,9 +857,11 @@ function TaskModal({ draft, set, subtasks, onToggleSub, onOpenSub, onAddSub, onS
   return (
     <Scrim onClose={onClose}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-        <h3 style={{ margin: 0, flex: 1 }}>タスクを編集</h3>
-        <button className="btn" onClick={onEstimate} title="AIに所要時間の見積りと作業枠の配置を提案させる"><ClockIcon size={15} />AIで見積り</button>
-        <button className="btn" onClick={onChat} title="このタスクをAIに相談"><BotIcon size={15} />AIに相談</button>
+        <h3 style={{ margin: 0, flex: 1 }}>{isNew ? "タスクを追加" : "タスクを編集"}</h3>
+        {!isNew && <>
+          <button className="btn" onClick={onEstimate} title="AIに所要時間の見積りと作業枠の配置を提案させる"><ClockIcon size={15} />AIで見積り</button>
+          <button className="btn" onClick={onChat} title="このタスクをAIに相談"><BotIcon size={15} />AIに相談</button>
+        </>}
       </div>
       <div className="field"><label>タイトル</label><input value={draft.title} onChange={(e) => set({ title: e.target.value })} /></div>
       <div className="row2">
@@ -754,12 +911,14 @@ function TaskModal({ draft, set, subtasks, onToggleSub, onOpenSub, onAddSub, onS
         </div>
       </div>
       <div className="hint">完了時に実績（かかった分数）を記録すると、AIの見積りがあなた仕様に較正されていきます。</div>
-      <div className="chk" style={{ marginBottom: 12 }}><input type="checkbox" checked={draft.done} onChange={(e) => set({ done: e.target.checked })} /><label style={{ margin: 0 }}>完了</label></div>
+      {!isNew && (
+        <div className="chk" style={{ marginBottom: 12 }}><input type="checkbox" checked={draft.done} onChange={(e) => set({ done: e.target.checked })} /><label style={{ margin: 0 }}>完了</label></div>
+      )}
       <div className="modal-foot">
-        <button className="link-danger" onClick={onDelete}>削除</button>
+        {!isNew && <button className="link-danger" onClick={onDelete}>削除</button>}
         <div className="spacer" />
         <button className="btn" onClick={onClose}>キャンセル</button>
-        <button className="btn btn-primary" onClick={onSave}>保存</button>
+        <button className="btn btn-primary" onClick={onSave}>{isNew ? "追加" : "保存"}</button>
       </div>
     </Scrim>
   );

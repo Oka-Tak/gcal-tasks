@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Kairos — the K doubles as clock hands pivoting on the stem -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#18232f"/>
+      <stop offset="1" stop-color="#0b0f14"/>
+    </linearGradient>
+    <!-- userSpaceOnUse: a bounding-box gradient degenerates on vertical lines -->
+    <linearGradient id="mint" x1="14" y1="12" x2="48" y2="52" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5cf2c0"/>
+      <stop offset="1" stop-color="#1fae83"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#tile)"/>
+  <rect x="1" y="1" width="62" height="62" rx="13" fill="none" stroke="#2de0a7" stroke-opacity=".18" stroke-width="2"/>
+  <!-- faint clock arc hinting a dial around the pivot -->
+  <path d="M44 13 A23 23 0 0 1 47 44" fill="none" stroke="#2de0a7" stroke-opacity=".35" stroke-width="2.5" stroke-linecap="round"/>
+  <!-- K: stem + two hands from the pivot -->
+  <line x1="20" y1="15" x2="20" y2="49" stroke="url(#mint)" stroke-width="7.5" stroke-linecap="round"/>
+  <line x1="22" y1="32" x2="41" y2="14" stroke="url(#mint)" stroke-width="7" stroke-linecap="round"/>
+  <line x1="22" y1="32" x2="43" y2="49" stroke="url(#mint)" stroke-width="7" stroke-linecap="round"/>
+  <!-- the opportune moment -->
+  <circle cx="47" cy="10" r="4" fill="#5cf2c0"/>
+</svg>

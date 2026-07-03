@@ -26,13 +26,13 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const message = typeof body.message === "string" ? body.message.trim() : "";
   if (!message) return Response.json({ detail: "message required" }, { status: 400 });
-  const agent = body.agent === "codex" ? "codex" : "claude";
   const result = await sendChat({
     taskKey: body.taskKey ?? null,
     thread: body.thread ?? null,
     message,
-    agent,
+    agent: typeof body.agent === "string" ? body.agent : undefined,
     model: typeof body.model === "string" ? body.model : undefined,
+    effort: typeof body.effort === "string" ? body.effort : undefined,
   });
   return Response.json(result);
 }

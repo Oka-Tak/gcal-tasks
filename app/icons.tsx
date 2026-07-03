@@ -51,6 +51,14 @@ export const MoonIcon = ({ size }: { size?: number }) => (
   </Svg>
 );
 
+export const NoteIcon = ({ size }: { size?: number }) => (
+  <Svg size={size}>
+    <path d="M5 3.5h11l3.5 3.5v13.5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1z" />
+    <path d="M15.5 3.5V7.5H19.5" />
+    <path d="M8 12h8M8 15.5h8M8 8.5h4" />
+  </Svg>
+);
+
 export const CheckCircleIcon = ({ size }: { size?: number }) => (
   <Svg size={size}>
     <circle cx="12" cy="12" r="9" />

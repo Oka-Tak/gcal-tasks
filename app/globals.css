@@ -191,6 +191,9 @@ a{color:var(--accent)}
 .subbar{height:5px;border-radius:3px;background:var(--line2);overflow:hidden;margin:2px 0 6px}
 .subfill{height:100%;background:var(--accent);border-radius:3px;transition:width .2s}
 .addrow{display:flex;gap:6px;padding:6px 4px 10px}
+.donetoggle{display:flex;align-items:center;gap:4px;background:none;border:none;
+     color:var(--muted);font-size:11.5px;padding:6px 4px;cursor:pointer;font-family:var(--mono)}
+.donetoggle:hover{color:var(--ink)}
 .addrow input{flex:1;border:1px solid var(--line);border-radius:8px;padding:8px 10px;
      font-size:13px;background:var(--panel2);color:var(--ink)}
 .addrow button{border:1px solid var(--line);border-radius:8px;background:var(--btn);
@@ -254,6 +257,16 @@ a{color:var(--accent)}
 .card h3{margin:0 0 12px;font-size:14px}
 .card.err{border-color:var(--danger);color:var(--danger)}
 .errline{color:var(--danger);font-size:12.5px;margin:-4px 0 10px}
+/* Studyplus-style timer */
+.card.timer.live{border-color:rgba(45,224,167,.4);
+     box-shadow:0 0 0 1px rgba(45,224,167,.15), 0 4px 18px rgba(45,224,167,.08)}
+.timerrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.timerrow select,.timerrow input{border:1px solid var(--line);border-radius:9px;
+     padding:9px 11px;background:var(--panel2);color:var(--ink);font-size:13px}
+.timerrow input{flex:1;min-width:160px}
+.tclock{font-family:var(--mono);font-size:26px;font-weight:700;color:var(--accent);
+     font-variant-numeric:tabular-nums}
+.tlabel{font-size:13px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .uprow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .uprow input[type=file]{font-size:13px;color:var(--muted)}
 textarea.mono,input.mono{font-family:var(--mono);font-size:12px}
@@ -273,9 +286,16 @@ textarea.mono,input.mono{font-family:var(--mono);font-size:12px}
 
 /* chat modal — a flex column so the log grows and the input stays put */
 .modal.wide{width:600px;display:flex;flex-direction:column;height:min(84vh,780px)}
+/* chatwrap anchors the jump-to-latest button; chatlog is the ONLY scroll box */
+.chatwrap{position:relative;flex:1;min-height:200px;display:flex;flex-direction:column}
 .chatlog{border:1px solid var(--line);border-radius:11px;background:var(--bg);
-     padding:8px 6px;flex:1;min-height:200px;overflow-y:auto;
-     display:flex;flex-direction:column;gap:2px}
+     padding:8px 6px;flex:1;min-height:0;overflow-y:auto;
+     display:flex;flex-direction:column;gap:2px;overscroll-behavior:contain}
+.jumpdown{position:absolute;right:14px;bottom:14px;width:40px;height:40px;
+     border-radius:50%;border:1px solid var(--line);background:var(--panel2);
+     color:var(--accent);font-size:18px;line-height:1;display:flex;
+     align-items:center;justify-content:center;box-shadow:0 3px 12px rgba(0,0,0,.4)}
+.jumpdown:hover{background:var(--accent-soft)}
 /* Slack/Discord-style flat message rows */
 .crow{display:flex;gap:10px;padding:6px 8px;border-radius:9px;align-items:flex-start}
 .crow:hover{background:var(--line2)}
@@ -284,12 +304,15 @@ textarea.mono,input.mono{font-family:var(--mono);font-size:12px}
 .cavatar.user{background:var(--accent);color:var(--accent-ink)}
 .cavatar.assistant{background:#233041;color:var(--accent)}
 .cavatar.assistant.codex{color:#6ea8fe}
+.cavatar.assistant.copilot{color:#b197fc}
+.cavatar.assistant.agy{color:#69db7c}
 .cbody{flex:1;min-width:0}
 .chead{display:flex;align-items:baseline;gap:8px}
 .cname{font-weight:700;font-size:13px}
 .ctime{font-size:10.5px;color:var(--muted);font-family:var(--mono)}
 .ctext{font-size:13.5px;line-height:1.6;white-space:pre-wrap;word-break:break-word;margin-top:1px}
 .ctext.thinking{color:var(--muted);font-style:italic}
+.cusage{font-size:10.5px;color:var(--muted);font-family:var(--mono);margin-top:3px}
 /* agent proposal cards — Slack-attachment style, indented under the message */
 .proposal{align-self:stretch;margin-left:52px;border:1px solid var(--line);
      border-left:3px solid var(--accent);
@@ -333,7 +356,59 @@ textarea.mono,input.mono{font-family:var(--mono);font-size:12px}
      border-color:rgba(45,224,167,.25);font-weight:600}
 .titem .ttitle{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .titem .tcount{font-size:10.5px;font-family:var(--mono);color:var(--muted)}
-.chatmain{flex:1;min-width:0;display:flex;flex-direction:column;padding:12px;background:var(--panel)}
+/* min-height:0 is load-bearing: without it a long chatlog blows past the
+   viewport and the PAGE scrolls instead of the log */
+.chatmain{flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;padding:12px;background:var(--panel)}
+
+/* notes (NotebookLM-ish) */
+.notecard{width:100%;text-align:left;background:var(--panel);cursor:pointer;font:inherit;color:inherit}
+.notecard:hover{border-color:var(--accent-dim)}
+.notebody{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:10px}
+.noteedit{flex:1;min-height:300px;border:1px solid var(--line);border-radius:9px;
+     padding:10px 12px;background:var(--panel2);color:var(--ink);font-size:12.5px;line-height:1.6}
+.tsfold .link{background:none;border:none;color:var(--muted);font-size:12px;padding:4px 0;cursor:pointer}
+.tsfold .link:hover{color:var(--ink)}
+.pre.ts{max-height:280px;overflow-y:auto;white-space:pre-wrap;word-break:break-word}
+.md{font-size:13.5px;line-height:1.7;word-break:break-word}
+.md h1,.md h2,.md h3{margin:14px 0 6px;line-height:1.4}
+.md h1{font-size:17px}.md h2{font-size:15px;color:var(--accent)}.md h3{font-size:13.5px}
+.md p{margin:6px 0}
+.md ul,.md ol{margin:6px 0;padding-left:22px}
+.md li{margin:2px 0}
+.md code{background:#0a0e13;border:1px solid var(--line);border-radius:5px;
+     padding:1px 5px;font-size:12px;font-family:var(--mono)}
+.md pre{background:#0a0e13;border:1px solid var(--line);border-radius:9px;
+     padding:10px;overflow-x:auto;margin:8px 0}
+.md pre code{background:none;border:none;padding:0}
+.md table{border-collapse:collapse;margin:8px 0;font-size:12.5px}
+.md th,.md td{border:1px solid var(--line);padding:4px 9px}
+.md blockquote{margin:8px 0;padding:2px 12px;border-left:3px solid var(--accent-dim);color:var(--muted)}
+.md hr{border:none;border-top:1px solid var(--line);margin:12px 0}
+
+/* AI usage report modal */
+.usagewrap{max-height:64vh;overflow-y:auto;display:flex;flex-direction:column;gap:10px}
+.usect{margin:2px 0 0;font-size:12px;color:var(--muted);text-transform:none;
+     letter-spacing:.04em;font-family:var(--mono)}
+.quota{border:1px solid var(--line);border-radius:11px;padding:9px 12px;
+     display:flex;flex-direction:column;gap:6px;background:var(--panel2)}
+.quota .qhead{display:flex;align-items:baseline;gap:8px}
+.quota .qname{font-weight:700;font-size:13px}
+.quota .qplan{font-size:10.5px;color:var(--muted);font-family:var(--mono)}
+.quota .qerr{font-size:11.5px;color:var(--muted)}
+.qrow{display:flex;align-items:center;gap:8px;font-size:11.5px}
+.qlabel{flex:none;width:128px;color:var(--muted)}
+.qbar{flex:1;height:8px;border-radius:999px;background:var(--line2);overflow:hidden}
+.qfill{display:block;height:100%;border-radius:999px;background:var(--accent)}
+.qfill.mid{background:#f2c14e}
+.qfill.low{background:var(--danger)}
+.qpct{flex:none;width:64px;text-align:right;font-family:var(--mono)}
+.qreset{flex:none;width:130px;color:var(--muted);font-size:10.5px;text-align:right}
+.usagetbl{width:100%;border-collapse:collapse;font-size:12px;font-family:var(--mono)}
+.usagetbl th{text-align:left;color:var(--muted);font-weight:600;padding:4px 8px;
+     border-bottom:1px solid var(--line)}
+.usagetbl td{padding:4px 8px;border-bottom:1px solid var(--line2)}
+.usagetbl td:first-child{max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.usagetbl .uerr{color:var(--danger)}
 
 /* kanban board */
 .board{flex:1;min-height:0;display:grid;grid-template-columns:repeat(4,1fr);
@@ -369,6 +444,7 @@ textarea.mono,input.mono{font-family:var(--mono);font-size:12px}
      width:26px;height:26px;font-size:13px;line-height:1;color:var(--muted);padding:0}
 .bmove button:hover:not(:disabled){background:#212d3b;color:var(--accent);border-color:#3a4856}
 .bmove button:disabled{opacity:.3;cursor:default}
+.btabs{display:none} /* mobile-only column switcher (see @media below) */
 .bmore,.bempty{font-size:11px;color:var(--muted);text-align:center;padding:6px;
      font-family:var(--mono)}
 
@@ -436,6 +512,10 @@ textarea.mono,input.mono{font-family:var(--mono);font-size:12px}
   .agentpick{flex-direction:row;flex-basis:100%;order:-1}
   .agentpick select{flex:1}
 
+  /* usage modal: tighter quota rows */
+  .qlabel{width:84px;font-size:11px}
+  .qreset{width:auto;max-width:96px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
   /* AI page: threads become a horizontal chip bar */
   .aiwrap{flex-direction:column}
   .threads{width:100%;flex-direction:row;overflow-x:auto;overflow-y:hidden;
@@ -443,13 +523,19 @@ textarea.mono,input.mono{font-family:var(--mono);font-size:12px}
   .titem{flex:0 0 auto;max-width:60vw}
   .chatmain{padding:10px}
 
-  /* kanban: swipeable columns */
+  /* kanban: swipeable columns + tab switcher */
   .board{display:flex;overflow-x:auto;overflow-y:hidden;scroll-snap-type:x mandatory;
        gap:10px;padding:10px}
-  .bcol{flex:0 0 82vw;scroll-snap-align:center}
+  .bcol{flex:0 0 86vw;scroll-snap-align:center}
   .bmove button{width:34px;height:34px;font-size:15px}
   .btitle{padding-right:80px}
   .bmeta{padding-right:80px}
+  .btabs{display:flex;gap:6px;padding:8px 10px 0;flex:none}
+  .btabs button{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;
+       background:var(--btn);border:1px solid var(--line);border-radius:9px;color:var(--ink);
+       font-size:12px;min-height:38px;font-weight:600}
+  .btabs button.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:700}
+  .btabs button.on .bcount{background:rgba(0,0,0,.15);color:inherit}
 }
 
 /* touch devices: bigger targets regardless of width */

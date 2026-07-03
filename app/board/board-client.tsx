@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Dock, MobileTabs } from "../nav";
 import { RefreshIcon } from "../icons";
 
@@ -49,6 +49,31 @@ export default function BoardClient() {
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [dragKey, setDragKey] = useState<string | null>(null);
+  const [activeCol, setActiveCol] = useState<Col>("todo"); // mobile column tabs
+  const boardRef = useRef<HTMLDivElement>(null);
+
+  const scrollToCol = (c: Col) => {
+    setActiveCol(c);
+    boardRef.current
+      ?.querySelector(`.bcol.${c}`)
+      ?.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+  };
+  // While swiping, highlight the column nearest to the viewport centre.
+  const onBoardScroll = () => {
+    const b = boardRef.current;
+    if (!b || b.scrollWidth <= b.clientWidth) return; // desktop grid doesn't scroll
+    const centre = b.getBoundingClientRect().left + b.clientWidth / 2;
+    let best: Col = "todo";
+    let bestDist = Infinity;
+    for (const c of COLS) {
+      const el = b.querySelector(`.bcol.${c}`);
+      if (!el) continue;
+      const r = el.getBoundingClientRect();
+      const d = Math.abs(r.left + r.width / 2 - centre);
+      if (d < bestDist) { bestDist = d; best = c; }
+    }
+    setActiveCol(best);
+  };
 
   const load = useCallback(async () => {
     const r = await api("GET", "/api/tasks");
@@ -123,7 +148,17 @@ export default function BoardClient() {
         <button className="btn" onClick={() => void load()} title="再読み込み"><RefreshIcon size={16} /></button>
       </div>
       {err && <p className="errline" style={{ margin: "8px 12px" }}>{err}</p>}
-      <div className="board">
+      {loaded && (
+        <div className="btabs">
+          {columns.map(({ col, items, hidden }) => (
+            <button key={col} className={activeCol === col ? "on" : ""} onClick={() => scrollToCol(col)}>
+              {COL_LABEL[col]}
+              <span className="bcount">{items.length + hidden}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="board" ref={boardRef} onScroll={onBoardScroll}>
         {!loaded && <p className="hint" style={{ padding: 16 }}>読み込み中…</p>}
         {loaded && columns.map(({ col, items, hidden }) => (
           <div

@@ -2,7 +2,7 @@ import path from "node:path";
 import { type NextRequest } from "next/server";
 import { auth } from "@/auth";
 import { env } from "@/lib/env";
-import { listLogs, saveLog, softDeleteLog, type LogDraft } from "@/lib/logs";
+import { listLogs, listLogsRange, saveLog, softDeleteLog, type LogDraft } from "@/lib/logs";
 
 export const runtime = "nodejs";
 
@@ -25,9 +25,15 @@ function safeImagePath(p: unknown): string | undefined {
   return abs.startsWith(base + path.sep) ? abs : undefined;
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   if (!(await requireUser()))
     return Response.json({ detail: "unauthenticated" }, { status: 401 });
+  // ?timeMin=&timeMax= (ISO) → range mode for the calendar's actuals overlay
+  const q = new URL(req.url).searchParams;
+  const min = toMs(q.get("timeMin"));
+  const max = toMs(q.get("timeMax"));
+  if (min != null && max != null)
+    return Response.json({ logs: listLogsRange(min, max) });
   return Response.json({ logs: listLogs() });
 }
 

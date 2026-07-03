@@ -5,4 +5,6 @@ export async function register() {
   if (process.env.NEXT_PHASE === "phase-production-build") return;
   const { startReminderLoop } = await import("./lib/notify");
   startReminderLoop();
+  const { startNudgeLoop } = await import("./lib/nudges");
+  startNudgeLoop();
 }

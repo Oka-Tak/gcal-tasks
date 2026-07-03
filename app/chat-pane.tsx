@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BotIcon, PersonIcon, TerminalIcon } from "./icons";
+import { AGENT_CATALOG, AGENT_NAMES, isAgentName, type AgentName, type AgentUsage } from "@/lib/agents-catalog";
 
 /**
  * The chat surface shared by the /ai tab (topic threads) and the per-task
@@ -9,7 +10,10 @@ import { BotIcon, PersonIcon, TerminalIcon } from "./icons";
  * as attachment cards and execute only via the approve buttons.
  */
 
-export type ChatMsg = { id: string; role: string; content: string | null; agent?: string | null; createdAt?: number | null };
+export type ChatMsg = {
+  id: string; role: string; content: string | null; agent?: string | null;
+  createdAt?: number | null; usage?: AgentUsage | null;
+};
 export type Proposal = {
   id: string; kind: string; summary: string | null; payload: Record<string, unknown>;
   status: string; error?: string | null; createdAt?: number | null;
@@ -24,11 +28,20 @@ const WD = ["日", "月", "火", "水", "木", "金", "土"];
 const pad = (n: number) => String(n).padStart(2, "0");
 const enc = encodeURIComponent;
 
-const MODELS: { value: string; label: string }[] = [
-  { value: "haiku", label: "haiku（軽い）" },
-  { value: "sonnet", label: "sonnet（標準）" },
-  { value: "opus", label: "opus（重い・計画向き）" },
-];
+/** Last-used model per agent (falling back to the pre-multi-agent key). */
+function storedModel(a: AgentName): string {
+  const models = AGENT_CATALOG[a].models;
+  const saved = localStorage.getItem(`kairos-model-${a}`) ?? localStorage.getItem("kairos-model");
+  return models.some((m) => m.id === saved) ? (saved as string) : models[0].id;
+}
+
+/** Last-used effort for an agent+model ("" = the model has no effort knob). */
+function storedEffort(a: AgentName, modelId: string): string {
+  const def = AGENT_CATALOG[a].models.find((m) => m.id === modelId);
+  if (!def?.efforts) return "";
+  const saved = localStorage.getItem(`kairos-effort-${a}-${modelId}`);
+  return saved && def.efforts.includes(saved) ? saved : (def.defaultEffort ?? def.efforts[0]);
+}
 
 async function api(method: string, url: string, body?: unknown) {
   const r = await fetch(url, {
@@ -50,11 +63,34 @@ function fmtTime(at?: number | null): string {
 }
 
 function Avatar({ role, agent }: { role: string; agent?: string | null }) {
+  const other = agent && agent !== "claude"; // codex / copilot / agy get their own tint
   return (
-    <div className={`cavatar ${role}${agent === "codex" ? " codex" : ""}`}>
-      {role === "user" ? <PersonIcon size={19} /> : agent === "codex" ? <TerminalIcon size={19} /> : <BotIcon size={19} />}
+    <div className={`cavatar ${role}${other ? ` ${agent}` : ""}`}>
+      {role === "user" ? <PersonIcon size={19} /> : other ? <TerminalIcon size={19} /> : <BotIcon size={19} />}
     </div>
   );
+}
+
+function fmtTok(n: number): string {
+  return n >= 10_000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+}
+
+/** One muted line under an assistant message: model ・ tokens ・ cost ・ time. */
+function usageLine(u?: AgentUsage | null): string | null {
+  if (!u) return null;
+  const bits: string[] = [];
+  if (u.model) bits.push(u.effort ? `${u.model} (${u.effort})` : u.model);
+  if (u.inputTokens != null || u.outputTokens != null) {
+    let t = `↑${u.inputTokens != null ? fmtTok(u.inputTokens) : "?"} ↓${u.outputTokens != null ? fmtTok(u.outputTokens) : "?"}`;
+    if (u.cachedTokens) t += ` (cache ${fmtTok(u.cachedTokens)})`;
+    bits.push(t);
+  } else if (u.totalTokens != null) {
+    bits.push(`${fmtTok(u.totalTokens)} tok`);
+  }
+  if (u.costUsd != null) bits.push(`$${u.costUsd.toFixed(u.costUsd < 0.1 ? 3 : 2)}`);
+  if (u.credits != null) bits.push(`${u.credits} cr`);
+  if (u.durationMs != null) bits.push(`${u.durationMs < 10_000 ? (u.durationMs / 1000).toFixed(1) : Math.round(u.durationMs / 1000)}s`);
+  return bits.length ? bits.join(" ・ ") : null;
 }
 
 function fmtWhen(v: unknown): string {
@@ -100,27 +136,44 @@ export function ChatPane({ thread, taskKey, autoMessage, emptyHint, onExecuted, 
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [input, setInput] = useState("");
-  const [agent, setAgent] = useState<"claude" | "codex">("claude");
+  const [agent, setAgent] = useState<AgentName>("claude");
   const [model, setModel] = useState("haiku");
+  const [effort, setEffort] = useState("");
   const [busy, setBusy] = useState(false);
   const [deciding, setDeciding] = useState<string | null>(null);
   const [batch, setBatch] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
-  const endRef = useRef<HTMLDivElement>(null);
+  const [showJump, setShowJump] = useState(false); // "↓ 最新へ" when scrolled up
+  const logRef = useRef<HTMLDivElement>(null);
+  const pinnedRef = useRef(true); // stick to the bottom unless the user scrolled up
+  const firstScroll = useRef(true);
   const autoSent = useRef(false);
 
-  // remember the last agent/model choice across sessions
+  // remember the last agent/model/effort choice across sessions
   useEffect(() => {
-    const a = localStorage.getItem("kairos-agent");
-    const m = localStorage.getItem("kairos-model");
+    const saved = localStorage.getItem("kairos-agent");
+    const a: AgentName = isAgentName(saved) ? saved : "claude";
+    const m = storedModel(a);
     // one-time localStorage read on mount — intentional.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (a === "codex" || a === "claude") setAgent(a);
-    if (m && MODELS.some((x) => x.value === m)) setModel(m);
+    setAgent(a);
+    setModel(m);
+    setEffort(storedEffort(a, m));
   }, []);
-  const pickAgent = (a: "claude" | "codex") => { setAgent(a); localStorage.setItem("kairos-agent", a); };
-  const pickModel = (m: string) => { setModel(m); localStorage.setItem("kairos-model", m); };
+  const pickAgent = (a: AgentName) => {
+    const m = storedModel(a);
+    setAgent(a); setModel(m); setEffort(storedEffort(a, m));
+    localStorage.setItem("kairos-agent", a);
+  };
+  const pickModel = (m: string) => {
+    setModel(m); setEffort(storedEffort(agent, m));
+    localStorage.setItem(`kairos-model-${agent}`, m);
+  };
+  const pickEffort = (e: string) => {
+    setEffort(e);
+    localStorage.setItem(`kairos-effort-${agent}-${model}`, e);
+  };
 
   const qs = thread ? `thread=${enc(thread)}` : taskKey ? `taskKey=${enc(taskKey)}` : "";
   const load = useCallback(async () => {
@@ -136,9 +189,31 @@ export function ChatPane({ thread, taskKey, autoMessage, emptyHint, onExecuted, 
     void load();
   }, [load]);
 
+  const scrollToEnd = useCallback((smooth: boolean) => {
+    const el = logRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+  }, []);
+
+  // Claude-web-style pinning: open at the latest message instantly; afterwards
+  // follow new messages only while the user is at the bottom — never yank them
+  // back down while they're reading history.
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [msgs, proposals, busy]);
+    if (!loaded) return;
+    if (firstScroll.current) {
+      firstScroll.current = false;
+      scrollToEnd(false);
+      return;
+    }
+    if (pinnedRef.current) scrollToEnd(true);
+  }, [msgs, proposals, busy, loaded, scrollToEnd]);
+
+  const onLogScroll = () => {
+    const el = logRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    pinnedRef.current = atBottom;
+    setShowJump(!atBottom);
+  };
 
   const sendMessage = useCallback(async (m: string) => {
     if (!m || busy) return;
@@ -146,7 +221,7 @@ export function ChatPane({ thread, taskKey, autoMessage, emptyHint, onExecuted, 
     setErr(null);
     setMsgs((prev) => [...prev, { id: `tmp-${Date.now()}`, role: "user", content: m, createdAt: Date.now() }]);
     try {
-      const r = await api("POST", "/api/chat", { thread, taskKey, message: m, agent, model });
+      const r = await api("POST", "/api/chat", { thread, taskKey, message: m, agent, model, effort: effort || undefined });
       if (!r.ok) setErr(r.error || "応答に失敗しました");
       await load();
       onActivity?.();
@@ -155,7 +230,7 @@ export function ChatPane({ thread, taskKey, autoMessage, emptyHint, onExecuted, 
     } finally {
       setBusy(false);
     }
-  }, [busy, thread, taskKey, agent, model, load, onActivity]);
+  }, [busy, thread, taskKey, agent, model, effort, load, onActivity]);
 
   useEffect(() => {
     if (!loaded || !autoMessage || autoSent.current || busy) return;
@@ -215,7 +290,8 @@ export function ChatPane({ thread, taskKey, autoMessage, emptyHint, onExecuted, 
 
   return (
     <>
-      <div className="chatlog">
+      <div className="chatwrap">
+      <div className="chatlog" ref={logRef} onScroll={onLogScroll}>
         {loaded && timeline.length === 0 && (
           <p className="hint">{emptyHint ?? "何でも聞いてください。タスク登録・予定の相談・見積りができます。提案はあなたが承認するまで実行されません。"}</p>
         )}
@@ -229,6 +305,9 @@ export function ChatPane({ thread, taskKey, autoMessage, emptyHint, onExecuted, 
                   <span className="ctime">{fmtTime(t.msg.createdAt)}</span>
                 </div>
                 <div className="ctext">{t.msg.content}</div>
+                {t.msg.role === "assistant" && usageLine(t.msg.usage) && (
+                  <div className="cusage">{usageLine(t.msg.usage)}</div>
+                )}
               </div>
             </div>
           ) : t.prop ? (
@@ -265,7 +344,13 @@ export function ChatPane({ thread, taskKey, autoMessage, emptyHint, onExecuted, 
             </div>
           </div>
         )}
-        <div ref={endRef} />
+      </div>
+      {showJump && (
+        <button className="jumpdown" title="最新へ"
+          onClick={() => { pinnedRef.current = true; setShowJump(false); scrollToEnd(true); }}>
+          ↓
+        </button>
+      )}
       </div>
       {pendings.length > 1 && (
         <div className="batchrow">
@@ -277,15 +362,22 @@ export function ChatPane({ thread, taskKey, autoMessage, emptyHint, onExecuted, 
       {err && <p className="errline" style={{ marginTop: 8 }}>{err}</p>}
       <div className="chatbar">
         <div className="agentpick">
-          <select value={agent} onChange={(e) => pickAgent(e.target.value as "claude" | "codex")} title="エージェント">
-            <option value="claude">claude</option>
-            <option value="codex">codex</option>
+          <select value={agent} onChange={(e) => pickAgent(e.target.value as AgentName)} title="エージェント">
+            {AGENT_NAMES.map((a) => <option key={a} value={a}>{a}</option>)}
           </select>
-          {agent === "claude" && (
-            <select value={model} onChange={(e) => pickModel(e.target.value)} title="モデル（軽い⇄重い）">
-              {MODELS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+          {AGENT_CATALOG[agent].models.length > 1 && (
+            <select value={model} onChange={(e) => pickModel(e.target.value)} title="モデル">
+              {AGENT_CATALOG[agent].models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
             </select>
           )}
+          {(() => {
+            const efforts = AGENT_CATALOG[agent].models.find((m) => m.id === model)?.efforts;
+            return efforts ? (
+              <select value={effort} onChange={(e) => pickEffort(e.target.value)} title="エフォート（思考の深さ）">
+                {efforts.map((e) => <option key={e} value={e}>{e}</option>)}
+              </select>
+            ) : null;
+          })()}
         </div>
         <textarea
           rows={2}

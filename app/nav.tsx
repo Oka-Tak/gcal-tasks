@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { CalendarIcon, KanbanIcon, BotIcon, MoonIcon, CheckCircleIcon } from "./icons";
+import { CalendarIcon, KanbanIcon, BotIcon, ClockIcon, CheckCircleIcon, NoteIcon } from "./icons";
 
 /**
  * App-wide navigation: an Ubuntu-style icon dock on the left (desktop) and a
@@ -13,7 +13,8 @@ const TABS = [
   { href: "/", Icon: CalendarIcon, label: "予定表" },
   { href: "/board", Icon: KanbanIcon, label: "ボード" },
   { href: "/ai", Icon: BotIcon, label: "AIアシスタント" },
-  { href: "/logs", Icon: MoonIcon, label: "睡眠記録" },
+  { href: "/logs", Icon: ClockIcon, label: "記録（実績）" },
+  { href: "/notes", Icon: NoteIcon, label: "ノート" },
 ];
 
 export function Dock() {
@@ -60,7 +61,8 @@ export function MobileTabs({ pane, onPane }: {
       )}
       <Link href="/board" className={path === "/board" ? "on" : ""}><KanbanIcon size={22} />ボード</Link>
       <Link href="/ai" className={path === "/ai" ? "on" : ""}><BotIcon size={22} />AI</Link>
-      <Link href="/logs" className={path === "/logs" ? "on" : ""}><MoonIcon size={22} />睡眠</Link>
+      <Link href="/logs" className={path === "/logs" ? "on" : ""}><ClockIcon size={22} />記録</Link>
+      <Link href="/notes" className={path === "/notes" ? "on" : ""}><NoteIcon size={22} />ノート</Link>
     </nav>
   );
 }

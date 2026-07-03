@@ -109,6 +109,10 @@ export const tasks = sqliteTable(
     dueTime: text("due_time"), // 'HH:MM'
     remindAt: integer("remind_at"), // epoch ms — when to push a reminder (ntfy)
     remindedAt: integer("reminded_at"), // epoch ms — when the push actually fired (reset on remindAt change)
+    nudgedForDue: text("nudged_for_due"), // the `due` value the day-before nudge fired for (re-fires when due moves)
+    splitNudgedAt: integer("split_nudged_at"), // epoch ms — "タスク区切りませんか" nudge fired (once per task)
+    dueSoonFor: text("due_soon_for"), // "YYYY-MM-DD HH:MM" deadline the 1-hour-before push fired for
+    duePassedFor: text("due_passed_for"), // "YYYY-MM-DD HH:MM" deadline the expired push fired for
     sortOrder: integer("sort_order"), // local ordering (future)
     kanban: text("kanban"), // board column: todo | doing | waiting (null = todo; done = status)
     // planning flywheel (local-only): the agent estimates, you record actuals.
@@ -149,6 +153,32 @@ export const logs = sqliteTable(
 );
 
 /**
+ * Notes — the NotebookLM-ish layer. A note usually starts from an uploaded
+ * audio file (lecture/meeting): whisperx transcribes it locally, then an agent
+ * turns the transcript into structured markdown. Notes can attach to a
+ * calendar event (eventKey = account|calendarId|googleId) or stand alone.
+ * Local-only; never mirrored to Google.
+ */
+export const notes = sqliteTable(
+  "notes",
+  {
+    id: text("id").primaryKey(), // uuid
+    eventKey: text("event_key"), // account|calendarId|googleId (null = standalone)
+    title: text("title"),
+    content: text("content"), // markdown (agent summary, then user-editable)
+    transcript: text("transcript"), // raw whisperx text
+    status: text("status").notNull(), // transcribing | summarizing | done | error
+    error: text("error"),
+    audioPath: text("audio_path"), // local upload (inside data dir)
+    jobId: text("job_id"), // agent_jobs row of the summarize step
+    createdAt: integer("created_at"),
+    updatedAt: integer("updated_at"),
+    deletedAt: integer("deleted_at"),
+  },
+  (t) => [index("notes_event").on(t.eventKey)],
+);
+
+/**
  * Agent invocation ledger. Every call to a local CLI agent (claude/codex) is
  * recorded here so the knowledge trail is durable and readable later (Proxmox
  * Claude Code). Today routes run agents inline and write the result back; this
@@ -164,6 +194,7 @@ export const agentJobs = sqliteTable(
     payload: text("payload"), // JSON input (prompt, image path, etc.)
     result: text("result"), // JSON output (parsed) or raw text
     error: text("error"),
+    usage: text("usage"), // JSON AgentUsage (tokens/cost/credits/duration), best-effort per CLI
     createdAt: integer("created_at"),
     startedAt: integer("started_at"),
     finishedAt: integer("finished_at"),

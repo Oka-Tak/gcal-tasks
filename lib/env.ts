@@ -32,8 +32,15 @@ export const env = {
   // Local CLI agents (must be on PATH or given as absolute paths).
   claudeBin: process.env.KAIROS_CLAUDE_BIN ?? "claude",
   codexBin: process.env.KAIROS_CODEX_BIN ?? "codex",
+  copilotBin: process.env.KAIROS_COPILOT_BIN ?? "copilot",
+  agyBin: process.env.KAIROS_AGY_BIN ?? "agy",
   // Default model alias for claude calls (vision-capable). Override per call.
   claudeModel: process.env.KAIROS_CLAUDE_MODEL ?? "sonnet",
+  // Local transcription (whisperX on CPU). Absolute path recommended: the
+  // systemd user unit may not have ~/.local/bin on PATH.
+  whisperxBin: process.env.KAIROS_WHISPERX_BIN ?? "whisperx",
+  whisperxModel: process.env.KAIROS_WHISPERX_MODEL ?? "small",
+  transcribeTimeoutMs: Number(process.env.KAIROS_TRANSCRIBE_TIMEOUT_MS ?? 3_600_000),
   // Hard ceiling for a single agent invocation.
   agentTimeoutMs: Number(process.env.KAIROS_AGENT_TIMEOUT_MS ?? 180000),
 };

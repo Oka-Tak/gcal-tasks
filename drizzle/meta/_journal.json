@@ -36,6 +36,34 @@
       "when": 1782946541960,
       "tag": "0004_sad_cerebro",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1783050294361,
+      "tag": "0005_good_galactus",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1783059797068,
+      "tag": "0006_loose_mac_gargan",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1783060531604,
+      "tag": "0007_lyrical_virginia_dare",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1783089657624,
+      "tag": "0008_panoramic_reavers",
+      "breakpoints": true
     }
   ]
 }

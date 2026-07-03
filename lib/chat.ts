@@ -1,8 +1,9 @@
 import crypto from "node:crypto";
-import { and, asc, eq, gt, isNull, lt } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull, lt } from "drizzle-orm";
 import { db } from "./db";
-import { calendars, chats, events, tasklists, tasks } from "./db/schema";
+import { agentJobs, calendars, chats, events, notes, tasklists, tasks } from "./db/schema";
 import { extractJson, runAgent, type AgentName } from "./agent";
+import { normalizeChoice, type AgentUsage } from "./agents-catalog";
 import { listAccounts } from "./accounts";
 import { listLogs } from "./logs";
 import { ACTION_SPEC, createProposals, listProposals, type ProposalView } from "./actions";
@@ -25,6 +26,7 @@ export interface ChatMessage {
   content: string | null;
   agent: string | null;
   createdAt: number | null;
+  usage?: AgentUsage | null; // from the linked agent_jobs row (assistant turns)
 }
 
 function threadOf(taskKey: string | null | undefined): string {
@@ -44,18 +46,28 @@ export function resolveThread(opts: { thread?: string | null; taskKey?: string |
 
 export function listMessages(threadId: string): ChatMessage[] {
   return db
-    .select()
+    .select({ msg: chats, usage: agentJobs.usage })
     .from(chats)
+    .leftJoin(agentJobs, eq(chats.jobId, agentJobs.id))
     .where(eq(chats.threadId, threadId))
     .orderBy(asc(chats.createdAt))
     .all()
-    .map((m) => ({
-      id: m.id,
-      role: m.role,
-      content: m.content,
-      agent: m.agent,
-      createdAt: m.createdAt,
-    }));
+    .map(({ msg: m, usage }) => {
+      let parsed: AgentUsage | null = null;
+      try {
+        parsed = usage ? (JSON.parse(usage) as AgentUsage) : null;
+      } catch {
+        // corrupt usage JSON — just omit it
+      }
+      return {
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        agent: m.agent,
+        createdAt: m.createdAt,
+        usage: parsed,
+      };
+    });
 }
 
 export function listThreadProposals(threadId: string): ProposalView[] {
@@ -363,6 +375,24 @@ function openTasks(): string {
     .join("\n");
 }
 
+/** Recent notes (lecture transcripts etc.) — titles + a peek, so the agent knows they exist. */
+function recentNotes(): string {
+  const rows = db
+    .select()
+    .from(notes)
+    .where(isNull(notes.deletedAt))
+    .orderBy(desc(notes.createdAt))
+    .limit(8)
+    .all();
+  if (!rows.length) return "（ノートはまだありません）";
+  return rows
+    .map((n) => {
+      const excerpt = (n.content ?? "").replace(/\s+/g, " ").slice(0, 200);
+      return `- 「${n.title ?? "(無題)"}」${n.eventKey ? "（予定に紐付き）" : ""}${excerpt ? `: ${excerpt}` : ""}`;
+    })
+    .join("\n");
+}
+
 function buildPrompt(taskRow: TaskRow | null, history: ChatMessage[], message: string): string {
   const out: string[] = [];
   out.push(
@@ -373,7 +403,7 @@ function buildPrompt(taskRow: TaskRow | null, history: ChatMessage[], message: s
     "段取りのルール: 旅程づくり・複数日にわたる計画・アクションが多数必要になる大きな依頼は、",
     "まず actions を空にして「こういう手順で進めます」という計画を reply で示し、確認を取ってから",
     "次のターンでアクションを出すこと。単純な依頼（タスク1件の追加・予定1件の変更など）は確認不要で直接アクションを出してよい。",
-    "ファイルやツールの操作はできません。下記の形式で返答するだけです。",
+    "ファイル操作はできません。Web検索（WebSearch / WebFetch）は使えるので、最新情報が必要なら検索してから答えてください。最終出力は下記の形式で。",
     "",
     ACTION_SPEC,
     "",
@@ -406,6 +436,7 @@ function buildPrompt(taskRow: TaskRow | null, history: ChatMessage[], message: s
   out.push("# 空き時間（07:00〜23:00、予定を除いた枠。作業枠の提案はここから）", freeSlots(), "");
   out.push("# 見積りと実績（このユーザーの較正データ）", estimationHistory(), "");
   out.push("# ユーザーのライフログ要約", summarizeLogs(), "");
+  out.push("# 最近のノート（講義の文字起こし等。ユーザーが内容に触れたら参照）", recentNotes(), "");
   if (history.length) {
     out.push("# これまでの会話");
     for (const m of history) {
@@ -430,21 +461,17 @@ export interface ChatResult {
   jobId: string;
 }
 
-const CLAUDE_MODELS = ["haiku", "sonnet", "opus"] as const;
-
 export async function sendChat(opts: {
   taskKey?: string | null;
   thread?: string | null;
   message: string;
-  agent?: AgentName;
-  model?: string; // claude alias — haiku (light default) .. opus (heavy planning)
+  agent?: string; // validated against lib/agents-catalog
+  model?: string;
+  effort?: string;
 }): Promise<ChatResult> {
   const threadId = resolveThread(opts);
   const taskKey = opts.thread ? null : opts.taskKey || null;
-  const agent: AgentName = opts.agent === "codex" ? "codex" : "claude";
-  const model = CLAUDE_MODELS.includes(opts.model as (typeof CLAUDE_MODELS)[number])
-    ? opts.model
-    : undefined; // undefined = env default
+  const { agent, model, effort } = normalizeChoice(opts.agent, opts.model, opts.effort);
   const history = listMessages(threadId); // before saving the new turn
   const taskRow = taskKey ? taskFor(taskKey) : null;
 
@@ -453,7 +480,9 @@ export async function sendChat(opts: {
   const res = await runAgent(buildPrompt(taskRow, history, opts.message), {
     agent,
     model,
+    effort,
     jobKind: "chat",
+    allowedTools: ["WebSearch", "WebFetch"], // claude: web only — file tools stay off
   });
   if (!res.ok) return { ok: false, error: res.error, jobId: res.jobId };
 

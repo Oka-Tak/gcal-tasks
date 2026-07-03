@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull, lt } from "drizzle-orm";
 import { db } from "./db";
 import { logs } from "./db/schema";
 import { env } from "./env";
@@ -148,6 +148,17 @@ export function listLogs(limit = 100) {
     .where(isNull(logs.deletedAt))
     .orderBy(desc(logs.startMs), desc(logs.createdAt))
     .limit(limit)
+    .all()
+    .map(serializeLog);
+}
+
+/** Logs overlapping [minMs, maxMs) — the calendar's "actuals" overlay. */
+export function listLogsRange(minMs: number, maxMs: number) {
+  return db
+    .select()
+    .from(logs)
+    .where(and(isNull(logs.deletedAt), gt(logs.endMs, minMs), lt(logs.startMs, maxMs)))
+    .orderBy(asc(logs.startMs))
     .all()
     .map(serializeLog);
 }

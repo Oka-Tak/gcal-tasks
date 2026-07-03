@@ -81,6 +81,188 @@ async function api(method: string, url: string, body?: unknown) {
   return r.status === 204 ? null : r.json();
 }
 
+const isoLocal = (ms: number) => {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
+};
+
+const TIMER_KEY = "kairos-timer"; // {startMs, kind, title} — survives reloads/navigation
+const TIMER_KINDS = ["work", "activity", "meal", "trip", "note"] as const;
+
+/* ------------------------------------------------------- Studyplus-style timer */
+function TimerCard({ onSaved }: { onSaved: () => void }) {
+  const [running, setRunning] = useState<{ startMs: number; kind: string; title: string } | null>(null);
+  const [kind, setKind] = useState("work");
+  const [title, setTitle] = useState("");
+  const [now, setNow] = useState(Date.now());
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // restore a timer that was started before a reload / on another page visit
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(TIMER_KEY);
+      if (raw) {
+        const t = JSON.parse(raw);
+        // one-time localStorage read on mount — intentional.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        if (typeof t?.startMs === "number") setRunning(t);
+      }
+    } catch { /* corrupt state — ignore */ }
+  }, []);
+
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [running]);
+
+  const start = () => {
+    const t = { startMs: Date.now(), kind, title: title.trim() };
+    localStorage.setItem(TIMER_KEY, JSON.stringify(t));
+    setRunning(t);
+  };
+  const discard = () => {
+    if (!confirm("計測を破棄しますか？")) return;
+    localStorage.removeItem(TIMER_KEY);
+    setRunning(null);
+  };
+  const stop = async () => {
+    if (!running) return;
+    setSaving(true);
+    setErr(null);
+    try {
+      await api("POST", "/api/logs", {
+        kind: running.kind,
+        title: (running.title || title).trim() || KIND_LABEL[running.kind] || running.kind,
+        start: isoLocal(running.startMs),
+        end: isoLocal(Date.now()),
+        tags: [],
+        metrics: {},
+        source: "timer",
+      });
+      localStorage.removeItem(TIMER_KEY);
+      setRunning(null);
+      setTitle("");
+      onSaved();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const elapsed = running ? Math.max(0, Math.floor((now - running.startMs) / 1000)) : 0;
+  const hh = Math.floor(elapsed / 3600), mm = Math.floor((elapsed % 3600) / 60), ss = elapsed % 60;
+
+  return (
+    <section className={`card timer${running ? " live" : ""}`}>
+      <h3>⏱ 計測して記録</h3>
+      {err && <p className="errline">{err}</p>}
+      {!running ? (
+        <div className="timerrow">
+          <select value={kind} onChange={(e) => setKind(e.target.value)}>
+            {TIMER_KINDS.map((k) => <option key={k} value={k}>{KIND_LABEL[k] ?? k}</option>)}
+          </select>
+          <input
+            placeholder="何をする？（例: レポート執筆）"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") start(); }}
+          />
+          <button className="btn btn-primary" onClick={start}>開始</button>
+        </div>
+      ) : (
+        <div className="timerrow">
+          <span className="tclock">{hh > 0 && `${hh}:`}{pad(mm)}:{pad(ss)}</span>
+          <span className="tlabel">{KIND_LABEL[running.kind] ?? running.kind}
+            {running.title ? ` — ${running.title}` : ""}</span>
+          <div className="spacer" />
+          <button className="btn" onClick={discard}>破棄</button>
+          <button className="btn btn-primary" disabled={saving} onClick={() => void stop()}>
+            {saving ? "保存中…" : "終了して保存"}
+          </button>
+        </div>
+      )}
+      <p className="hint" style={{ margin: "6px 0 0" }}>
+        計測中はページを離れても続きます。記録した実績はカレンダーの「実績」表示と AI の見積り較正に使われます。
+      </p>
+    </section>
+  );
+}
+
+/* ----------------------------------------------------- record after the fact */
+function ManualCard({ onSaved }: { onSaved: () => void }) {
+  const [kind, setKind] = useState("work");
+  const [title, setTitle] = useState("");
+  const [start, setStart] = useState("");
+  const [end, setEnd] = useState("");
+  const [note, setNote] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const save = async () => {
+    if (!start || !end) { setErr("開始と終了を入れてください"); return; }
+    if (Date.parse(end) <= Date.parse(start)) { setErr("終了は開始より後にしてください"); return; }
+    setSaving(true);
+    setErr(null);
+    try {
+      await api("POST", "/api/logs", {
+        kind,
+        title: title.trim() || KIND_LABEL[kind] || kind,
+        note: note.trim() || null,
+        start, end,
+        tags: [], metrics: {}, source: "manual",
+      });
+      setTitle(""); setStart(""); setEnd(""); setNote("");
+      onSaved();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="card">
+      <h3>あとから記録</h3>
+      {err && <p className="errline">{err}</p>}
+      <div className="row2">
+        <div className="field">
+          <label>種類</label>
+          <select value={kind} onChange={(e) => setKind(e.target.value)}>
+            {TIMER_KINDS.map((k) => <option key={k} value={k}>{KIND_LABEL[k] ?? k}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label>タイトル</label>
+          <input value={title} placeholder="例: 数学の課題" onChange={(e) => setTitle(e.target.value)} />
+        </div>
+      </div>
+      <div className="row2">
+        <div className="field">
+          <label>開始</label>
+          <input type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)} />
+        </div>
+        <div className="field">
+          <label>終了</label>
+          <input type="datetime-local" value={end} onChange={(e) => setEnd(e.target.value)} />
+        </div>
+      </div>
+      <div className="field">
+        <label>メモ（任意）</label>
+        <input value={note} onChange={(e) => setNote(e.target.value)} />
+      </div>
+      <div className="modal-foot">
+        <div className="spacer" />
+        <button className="btn btn-primary" disabled={saving} onClick={() => void save()}>
+          {saving ? "保存中…" : "記録する"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
 /* =================================================================== page */
 export default function LogsClient() {
   const [authed, setAuthed] = useState<boolean | null>(null);
@@ -196,17 +378,21 @@ export default function LogsClient() {
       <div className="main">
       <div className="topbar">
         <span className="brand">Kairos</span>
-        <div className="range">睡眠記録</div>
+        <div className="range">記録（実績）</div>
         <div className="spacer" />
       </div>
 
       <div className="scrollwrap">
       <div className="page">
         <p className="lead">
-          スマートウォッチの睡眠スクショなどを取り込むと、AI
-          が読み取って記録します。ここに溜めた「実際にやったこと」が、タスクの所要時間を
-          あなた基準で見積もるためのナレッジになります（ローカル DB のみ・Google には送りません）。
+          「実際にやったこと」の記録＝裏カレンダーです。タイマーで測るか、あとから手で記録します。
+          溜めた実績はカレンダーの「実績」表示に出て、タスクの所要時間をあなた基準で
+          見積もるためのナレッジになります（ローカル DB のみ・Google には送りません）。
         </p>
+
+        {/* ---- timer / manual ---- */}
+        <TimerCard onSaved={() => void reload()} />
+        <ManualCard onSaved={() => void reload()} />
 
         {/* ---- ingest ---- */}
         <section className="card">
