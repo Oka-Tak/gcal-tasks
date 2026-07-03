@@ -63,6 +63,8 @@ a{color:var(--accent)}
 .dock .dbrand{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;
      justify-content:center;font-family:var(--mono);font-weight:800;font-size:21px;
      color:var(--accent-ink);background:var(--accent);text-decoration:none;margin-bottom:10px}
+.dock .dmnemo{font-weight:800;font-size:17px;color:#b197fc;text-decoration:none;margin-top:auto}
+.dock .dmnemo:hover{background:rgba(177,151,252,.14)}
 .dock .dicon{position:relative;width:48px;height:48px;border-radius:13px;display:flex;
      align-items:center;justify-content:center;font-size:23px;text-decoration:none;
      transition:background .12s}

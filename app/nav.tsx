@@ -17,6 +17,9 @@ const TABS = [
   { href: "/notes", Icon: NoteIcon, label: "ノート" },
 ];
 
+// Sibling app: mnemo (free chat + people knowledge) on the same tailnet host.
+const MNEMO_URL = "https://zundamon-ubuntu-alc6.tail7507d4.ts.net:8443";
+
 export function Dock() {
   const path = usePathname();
   return (
@@ -32,6 +35,8 @@ export function Dock() {
           <Icon size={24} />
         </Link>
       ))}
+      <a href={MNEMO_URL} className="dicon dmnemo" data-label="mnemo（チャット）"
+        target="_blank" rel="noopener noreferrer">M</a>
     </aside>
   );
 }
