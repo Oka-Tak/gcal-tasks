@@ -2,9 +2,9 @@ import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import { db } from "./db";
-import { notes } from "./db/schema";
+import { events, notes } from "./db/schema";
 import { env } from "./env";
 import { runAgent } from "./agent";
 import { pushNoteToOwui } from "./owui";
@@ -78,6 +78,25 @@ function setStatus(id: string, status: string, patch: Partial<typeof notes.$infe
   db.update(notes).set({ status, updatedAt: Date.now(), ...patch }).where(eq(notes.id, id)).run();
 }
 
+/**
+ * The Open WebUI notebook for a note: explicit user choice > the attached
+ * event's title (recurring lectures share one, so notes pack per course) >
+ * the catch-all. Keeps courses from mixing in RAG queries.
+ */
+function notebookFor(explicit: string | null | undefined, eventKey: string | null | undefined): string | null {
+  if (explicit?.trim()) return explicit.trim();
+  if (eventKey) {
+    const [account, calendarId, googleId] = eventKey.split("|");
+    const ev = db
+      .select({ summary: events.summary })
+      .from(events)
+      .where(and(eq(events.account, account), eq(events.calendarId, calendarId), eq(events.googleId, googleId)))
+      .get();
+    if (ev?.summary) return `講義: ${ev.summary}`;
+  }
+  return null; // → owui.ts falls back to the default collection
+}
+
 /* ------------------------------------------------------------ transcription */
 
 function runWhisperx(audioAbs: string, outDir: string): Promise<{ ok: boolean; err: string }> {
@@ -132,7 +151,7 @@ function summarizePrompt(transcript: string, title: string, eventLabel: string |
 }
 
 /** Fire-and-forget pipeline body. All failures land in the note row. */
-async function pipeline(noteId: string, audioAbs: string, title: string, eventLabel: string | null) {
+async function pipeline(noteId: string, audioAbs: string, title: string, eventLabel: string | null, notebook: string | null) {
   const outDir = path.join(path.dirname(audioAbs), `wx-${noteId}`);
   try {
     const wx = await runWhisperx(audioAbs, outDir);
@@ -161,7 +180,7 @@ async function pipeline(noteId: string, audioAbs: string, title: string, eventLa
     const content = res.text.trim().slice(0, 200_000);
     setStatus(noteId, "done", { content, jobId: res.jobId });
     // NotebookLM layer: make the note queryable from the Open WebUI chat
-    void pushNoteToOwui({ id: noteId, title, content, transcript });
+    void pushNoteToOwui({ id: noteId, title, content, transcript }, notebook);
   } catch (e) {
     setStatus(noteId, "error", { error: String(e).slice(0, 500) });
   } finally {
@@ -176,6 +195,7 @@ export async function ingestAudioNote(opts: {
   title: string;
   eventKey?: string | null;
   eventLabel?: string | null; // e.g. "狩野研先端 7/2 14:25" — context for the summary
+  notebook?: string | null; // Open WebUI collection override (packing)
 }): Promise<string> {
   const ext = (path.extname(opts.filename) || "").toLowerCase();
   if (!AUDIO_EXT.has(ext)) throw new Error(`未対応の形式です: ${ext || "(拡張子なし)"}`);
@@ -199,12 +219,18 @@ export async function ingestAudioNote(opts: {
     .run();
 
   // detached — the UI polls /api/notes for status
-  void pipeline(id, audioAbs, opts.title || opts.filename, opts.eventLabel ?? null);
+  void pipeline(
+    id,
+    audioAbs,
+    opts.title || opts.filename,
+    opts.eventLabel ?? null,
+    notebookFor(opts.notebook, opts.eventKey),
+  );
   return id;
 }
 
 /** Create an empty manual note (no audio). */
-export function createManualNote(opts: { title: string; content?: string; eventKey?: string | null }): string {
+export function createManualNote(opts: { title: string; content?: string; eventKey?: string | null; notebook?: string | null }): string {
   const id = crypto.randomUUID();
   const now = Date.now();
   db.insert(notes)
@@ -219,7 +245,10 @@ export function createManualNote(opts: { title: string; content?: string; eventK
     })
     .run();
   if (opts.content) {
-    void pushNoteToOwui({ id, title: opts.title, content: opts.content, transcript: null });
+    void pushNoteToOwui(
+      { id, title: opts.title, content: opts.content, transcript: null },
+      notebookFor(opts.notebook, opts.eventKey),
+    );
   }
   return id;
 }

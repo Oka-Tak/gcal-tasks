@@ -33,6 +33,7 @@ export async function POST(req: NextRequest) {
       title: (form.get("title") as string) || file.name || "音声ノート",
       eventKey: (form.get("eventKey") as string) || null,
       eventLabel: (form.get("eventLabel") as string) || null,
+      notebook: (form.get("notebook") as string) || null,
     });
     return Response.json({ id });
   } catch (e) {

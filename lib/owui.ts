@@ -8,9 +8,9 @@ import { env } from "./env";
  * must never fail a note.
  */
 
-const COLLECTION = "Kairos ノート";
+const DEFAULT_COLLECTION = "Kairos ノート";
 
-const g = globalThis as unknown as { __owuiToken?: string; __owuiKid?: string };
+const g = globalThis as unknown as { __owuiToken?: string; __owuiKids?: Map<string, string> };
 
 async function owuiFetch(path: string, init: RequestInit = {}, token?: string): Promise<Response> {
   return fetch(`${env.owuiUrl}${path}`, {
@@ -41,40 +41,51 @@ async function getToken(): Promise<string> {
   return d.token;
 }
 
-async function getCollectionId(token: string): Promise<string> {
-  if (g.__owuiKid) return g.__owuiKid;
+async function getCollectionId(token: string, name: string): Promise<string> {
+  const cache = (g.__owuiKids ??= new Map());
+  const hitCached = cache.get(name);
+  if (hitCached) return hitCached;
   const list = await owuiFetch("/api/v1/knowledge/", {}, token);
   if (list.ok) {
     const raw = (await list.json()) as
       | { id: string; name: string }[]
       | { items: { id: string; name: string }[] };
     const items = Array.isArray(raw) ? raw : (raw.items ?? []);
-    const hit = items.find((k) => k.name === COLLECTION);
-    if (hit) return (g.__owuiKid = hit.id);
+    const hit = items.find((k) => k.name === name);
+    if (hit) {
+      cache.set(name, hit.id);
+      return hit.id;
+    }
   }
   const create = await owuiFetch("/api/v1/knowledge/create", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      name: COLLECTION,
-      description: "Kairos の講義ノート・文字起こし（自動同期）",
+      name,
+      description: "Kairos のノート・文字起こし（自動同期）",
     }),
   }, token);
   if (!create.ok) throw new Error(`owui knowledge create: HTTP ${create.status}`);
   const d = (await create.json()) as { id: string };
-  return (g.__owuiKid = d.id);
+  cache.set(name, d.id);
+  return d.id;
 }
 
-/** Upload one note as a markdown file and attach it to the collection. */
+/**
+ * Upload one note as a markdown file and attach it to a collection.
+ * `collection` is the notebook: per-course for event-attached notes
+ * (講義: 経営管理), the catch-all otherwise.
+ */
 export async function pushNoteToOwui(note: {
   id: string;
   title: string | null;
   content: string | null;
   transcript: string | null;
-}): Promise<void> {
+}, collection?: string | null): Promise<void> {
+  const name = (collection ?? "").trim() || DEFAULT_COLLECTION;
   try {
     const token = await getToken();
-    const kid = await getCollectionId(token);
+    const kid = await getCollectionId(token, name);
 
     const md = [
       `# ${note.title ?? "(無題)"}`,
@@ -99,7 +110,7 @@ export async function pushNoteToOwui(note: {
       body: JSON.stringify({ file_id: file.id }),
     }, token);
     if (!add.ok) throw new Error(`owui knowledge add: HTTP ${add.status} ${(await add.text()).slice(0, 200)}`);
-    console.log(`[owui] note ${note.id} indexed into "${COLLECTION}"`);
+    console.log(`[owui] note ${note.id} indexed into "${name}"`);
   } catch (e) {
     console.error("[owui] push failed (note kept locally):", e);
   }

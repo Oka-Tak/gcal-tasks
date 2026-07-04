@@ -48,6 +48,7 @@ export function AudioUpload({ eventKey, eventLabel, onStarted, compact }: {
 }) {
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
+  const [notebook, setNotebook] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -60,6 +61,7 @@ export function AudioUpload({ eventKey, eventLabel, onStarted, compact }: {
       const fd = new FormData();
       fd.append("file", file);
       fd.append("title", title.trim() || file.name);
+      if (notebook.trim()) fd.append("notebook", notebook.trim());
       if (eventKey) fd.append("eventKey", eventKey);
       if (eventLabel) fd.append("eventLabel", eventLabel);
       const r = await fetch("/api/notes/ingest", { method: "POST", body: fd });
@@ -85,6 +87,11 @@ export function AudioUpload({ eventKey, eventLabel, onStarted, compact }: {
         <input placeholder="タイトル（例: 経営管理 第12回）" value={title}
           style={{ flex: 1, minWidth: 140 }}
           onChange={(e) => setTitle(e.target.value)} />
+        {!compact && (
+          <input placeholder="分類（例: 経営管理）※AIチャットの検索単位" value={notebook}
+            style={{ flex: 1, minWidth: 120 }}
+            onChange={(e) => setNotebook(e.target.value)} />
+        )}
         <button className="btn btn-primary" disabled={!file || busy} onClick={() => void go()}>
           {busy ? "アップロード中…" : "文字起こし開始"}
         </button>
