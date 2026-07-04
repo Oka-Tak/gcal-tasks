@@ -71,6 +71,62 @@ async function getCollectionId(token: string, name: string): Promise<string> {
   return d.id;
 }
 
+/** MIME guesses for the types Open WebUI's loaders handle well. */
+const MIME: Record<string, string> = {
+  ".pdf": "application/pdf",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".csv": "text/csv",
+  ".txt": "text/plain",
+  ".md": "text/markdown",
+  ".html": "text/html",
+};
+
+export function owuiSupportedExt(ext: string): boolean {
+  return ext.toLowerCase() in MIME;
+}
+
+/**
+ * Upload an arbitrary local file into a collection (the OneDrive sync path).
+ * Returns the Open WebUI file id so callers can replace it on change.
+ * Unlike pushNoteToOwui this THROWS on failure — the sync job tracks state
+ * and must not record a push that didn't happen.
+ */
+export async function pushLocalFileToOwui(
+  buf: Buffer,
+  filename: string,
+  collection: string,
+): Promise<string> {
+  const token = await getToken();
+  const kid = await getCollectionId(token, collection);
+  const ext = filename.slice(filename.lastIndexOf(".")).toLowerCase();
+  const fd = new FormData();
+  fd.append("file", new Blob([new Uint8Array(buf)], { type: MIME[ext] ?? "application/octet-stream" }), filename);
+  const up = await owuiFetch("/api/v1/files/", { method: "POST", body: fd }, token);
+  if (!up.ok) throw new Error(`owui file upload: HTTP ${up.status} ${(await up.text()).slice(0, 200)}`);
+  const file = (await up.json()) as { id: string };
+  const add = await owuiFetch(`/api/v1/knowledge/${kid}/file/add`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ file_id: file.id }),
+  }, token);
+  if (!add.ok) throw new Error(`owui knowledge add: HTTP ${add.status} ${(await add.text()).slice(0, 200)}`);
+  return file.id;
+}
+
+/** Detach a file from a collection and delete it (stale/changed sync entries). */
+export async function removeOwuiFile(collection: string, fileId: string): Promise<void> {
+  const token = await getToken();
+  const kid = await getCollectionId(token, collection);
+  await owuiFetch(`/api/v1/knowledge/${kid}/file/remove`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ file_id: fileId }),
+  }, token);
+  await owuiFetch(`/api/v1/files/${fileId}`, { method: "DELETE" }, token);
+}
+
 /**
  * Upload one note as a markdown file and attach it to a collection.
  * `collection` is the notebook: per-course for event-attached notes
