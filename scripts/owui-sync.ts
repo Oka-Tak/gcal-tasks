@@ -47,9 +47,13 @@ async function main() {
   const seen = new Set<string>();
   let pushed = 0, removed = 0, skipped = 0;
 
-  let tops: string[] = [];
+  // ROOT holds one dir per Syncthing share. The user shares their whole
+  // OneDrive root, so the meaningful grouping is one level down: each
+  // share's top-level dir becomes a collection ("OneDrive: 授業資料"),
+  // loose files in the share root go to "OneDrive: その他".
+  let shares: string[] = [];
   try {
-    tops = (await fs.readdir(ROOT, { withFileTypes: true }))
+    shares = (await fs.readdir(ROOT, { withFileTypes: true }))
       .filter((e) => e.isDirectory() && !e.name.startsWith("."))
       .map((e) => e.name);
   } catch {
@@ -57,26 +61,38 @@ async function main() {
     return;
   }
 
-  for (const top of tops) {
-    const collection = `OneDrive: ${top}`;
-    for await (const abs of walk(path.join(ROOT, top))) {
-      const rel = path.relative(ROOT, abs);
-      seen.add(rel);
-      const ext = path.extname(abs);
-      if (!owuiSupportedExt(ext)) { skipped++; continue; }
-      const st = await fs.stat(abs);
-      if (st.size === 0 || st.size > MAX_BYTES) { skipped++; continue; }
-      const prev = state[rel];
-      if (prev && prev.mtimeMs === st.mtimeMs && prev.size === st.size) continue; // unchanged
-
-      if (prev) await removeOwuiFile(prev.collection, prev.fileId).catch(() => {});
-      // flatten the relative path into the filename so RAG citations stay readable
-      const filename = rel.split(path.sep).slice(1).join("__") || path.basename(abs);
-      const fileId = await pushLocalFileToOwui(await fs.readFile(abs), filename, collection);
-      state[rel] = { mtimeMs: st.mtimeMs, size: st.size, fileId, collection };
-      pushed++;
-      console.log(`[owui-sync] pushed ${rel} → "${collection}"`);
+  const jobs: { abs: string; rel: string; collection: string }[] = [];
+  for (const share of shares) {
+    const shareAbs = path.join(ROOT, share);
+    for (const e of await fs.readdir(shareAbs, { withFileTypes: true })) {
+      if (e.name.startsWith(".st") || e.name.startsWith(".")) continue;
+      const abs = path.join(shareAbs, e.name);
+      if (e.isDirectory()) {
+        for await (const f of walk(abs)) {
+          jobs.push({ abs: f, rel: path.relative(ROOT, f), collection: `OneDrive: ${e.name}` });
+        }
+      } else if (e.isFile()) {
+        jobs.push({ abs, rel: path.relative(ROOT, abs), collection: "OneDrive: その他" });
+      }
     }
+  }
+
+  for (const { abs, rel, collection } of jobs) {
+    seen.add(rel);
+    const ext = path.extname(abs);
+    if (!owuiSupportedExt(ext)) { skipped++; continue; }
+    const st = await fs.stat(abs);
+    if (st.size === 0 || st.size > MAX_BYTES) { skipped++; continue; }
+    const prev = state[rel];
+    if (prev && prev.mtimeMs === st.mtimeMs && prev.size === st.size) continue; // unchanged
+
+    if (prev) await removeOwuiFile(prev.collection, prev.fileId).catch(() => {});
+    // flatten the path below the top dir into the filename so citations stay readable
+    const filename = rel.split(path.sep).slice(2).join("__") || path.basename(abs);
+    const fileId = await pushLocalFileToOwui(await fs.readFile(abs), filename, collection);
+    state[rel] = { mtimeMs: st.mtimeMs, size: st.size, fileId, collection };
+    pushed++;
+    console.log(`[owui-sync] pushed ${rel} → "${collection}"`);
   }
 
   // files that vanished from the mirror get detached from RAG too
