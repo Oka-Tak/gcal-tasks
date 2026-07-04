@@ -7,6 +7,7 @@ import { db } from "./db";
 import { notes } from "./db/schema";
 import { env } from "./env";
 import { runAgent } from "./agent";
+import { pushNoteToOwui } from "./owui";
 
 /**
  * NotebookLM-ish notes: audio in → whisperX transcript (local CPU) → agent
@@ -157,7 +158,10 @@ async function pipeline(noteId: string, audioAbs: string, title: string, eventLa
       setStatus(noteId, "error", { error: `要約失敗: ${res.error}`, jobId: res.jobId });
       return;
     }
-    setStatus(noteId, "done", { content: res.text.trim().slice(0, 200_000), jobId: res.jobId });
+    const content = res.text.trim().slice(0, 200_000);
+    setStatus(noteId, "done", { content, jobId: res.jobId });
+    // NotebookLM layer: make the note queryable from the Open WebUI chat
+    void pushNoteToOwui({ id: noteId, title, content, transcript });
   } catch (e) {
     setStatus(noteId, "error", { error: String(e).slice(0, 500) });
   } finally {
@@ -214,5 +218,8 @@ export function createManualNote(opts: { title: string; content?: string; eventK
       updatedAt: now,
     })
     .run();
+  if (opts.content) {
+    void pushNoteToOwui({ id, title: opts.title, content: opts.content, transcript: null });
+  }
   return id;
 }

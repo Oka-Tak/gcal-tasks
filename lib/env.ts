@@ -38,6 +38,8 @@ export const env = {
   claudeModel: process.env.KAIROS_CLAUDE_MODEL ?? "sonnet",
   // Local transcription (whisperX on CPU). Absolute path recommended: the
   // systemd user unit may not have ~/.local/bin on PATH.
+  // Open WebUI (the :443 chat) — notes get indexed into its Knowledge there.
+  owuiUrl: (process.env.KAIROS_OWUI_URL ?? "http://127.0.0.1:3300").replace(/\/$/, ""),
   whisperxBin: process.env.KAIROS_WHISPERX_BIN ?? "whisperx",
   whisperxModel: process.env.KAIROS_WHISPERX_MODEL ?? "small",
   transcribeTimeoutMs: Number(process.env.KAIROS_TRANSCRIBE_TIMEOUT_MS ?? 3_600_000),
