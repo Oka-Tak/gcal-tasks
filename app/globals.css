@@ -333,6 +333,14 @@ textarea.mono,input.mono{font-family:var(--mono);font-size:12px}
 .proposal .pbtns{display:flex;gap:8px;margin-top:3px}
 .proposal .pstat{font-size:12px;color:var(--muted)}
 .proposal .pstat.error{color:var(--danger)}
+.attachrow{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.attachchip{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);
+     border-radius:999px;background:var(--panel2);padding:4px 10px;font-size:12px;
+     max-width:260px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.attachchip button{border:none;background:none;color:var(--muted);font-size:13px;padding:0 2px}
+.attachchip button:hover{color:var(--danger)}
+.chatbar .attachbtn{align-self:stretch;padding:7px 10px}
+.chatbar .attachbtn.dim{opacity:.45}
 .chatbar{display:flex;gap:8px;align-items:flex-end;margin-top:10px}
 .chatbar select{border:1px solid var(--line);border-radius:9px;padding:8px 7px;
      font-size:12px;font-family:var(--mono);align-self:stretch;

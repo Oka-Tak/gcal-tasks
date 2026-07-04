@@ -21,6 +21,12 @@ const csp = [
 const nextConfig: NextConfig = {
   // better-sqlite3 is a native module; keep it external so it isn't bundled.
   serverExternalPackages: ["better-sqlite3"],
+  experimental: {
+    // proxy.ts makes Next buffer request bodies with a 10MB default cap, which
+    // truncated lecture-audio uploads (=> "Failed to parse body as FormData").
+    // Keep in sync with MAX_BYTES in app/api/notes/ingest.
+    proxyClientMaxBodySize: "512mb",
+  },
   async headers() {
     return [
       {

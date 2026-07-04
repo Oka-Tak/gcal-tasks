@@ -393,7 +393,12 @@ function recentNotes(): string {
     .join("\n");
 }
 
-function buildPrompt(taskRow: TaskRow | null, history: ChatMessage[], message: string): string {
+export interface ChatFile {
+  path: string; // absolute, inside the data dir
+  name: string; // original filename (display + prompt context)
+}
+
+function buildPrompt(taskRow: TaskRow | null, history: ChatMessage[], message: string, files: ChatFile[] = []): string {
   const out: string[] = [];
   out.push(
     "あなたはユーザー専属のプランニングアシスタントです。日本語で、簡潔かつ実用的に答えてください。",
@@ -403,7 +408,8 @@ function buildPrompt(taskRow: TaskRow | null, history: ChatMessage[], message: s
     "段取りのルール: 旅程づくり・複数日にわたる計画・アクションが多数必要になる大きな依頼は、",
     "まず actions を空にして「こういう手順で進めます」という計画を reply で示し、確認を取ってから",
     "次のターンでアクションを出すこと。単純な依頼（タスク1件の追加・予定1件の変更など）は確認不要で直接アクションを出してよい。",
-    "ファイル操作はできません。Web検索（WebSearch / WebFetch）は使えるので、最新情報が必要なら検索してから答えてください。最終出力は下記の形式で。",
+    "ファイルの作成・変更はできません。ユーザーが添付したファイルがある場合のみ Read ツールで読めます（画像・PDF可）。",
+    "Web検索（WebSearch / WebFetch）は使えるので、最新情報が必要なら検索してから答えてください。最終出力は下記の形式で。",
     "",
     ACTION_SPEC,
     "",
@@ -444,6 +450,11 @@ function buildPrompt(taskRow: TaskRow | null, history: ChatMessage[], message: s
     }
     out.push("");
   }
+  if (files.length) {
+    out.push("# 添付ファイル（必ず Read ツールで開いて内容を踏まえること）");
+    for (const f of files) out.push(`- ${f.path} （元のファイル名: ${f.name}）`);
+    out.push("");
+  }
   out.push(
     "# 新しい発言",
     `ユーザー: ${message}`,
@@ -468,21 +479,29 @@ export async function sendChat(opts: {
   agent?: string; // validated against lib/agents-catalog
   model?: string;
   effort?: string;
+  files?: ChatFile[]; // uploaded attachments (claude reads them via Read)
 }): Promise<ChatResult> {
   const threadId = resolveThread(opts);
   const taskKey = opts.thread ? null : opts.taskKey || null;
   const { agent, model, effort } = normalizeChoice(opts.agent, opts.model, opts.effort);
+  const files = opts.files ?? [];
   const history = listMessages(threadId); // before saving the new turn
   const taskRow = taskKey ? taskFor(taskKey) : null;
 
-  saveMessage(threadId, taskKey, "user", opts.message);
+  // keep the attachment names visible in the conversation history
+  const displayMessage = files.length
+    ? `${opts.message}\n📎 ${files.map((f) => f.name).join(", ")}`
+    : opts.message;
+  saveMessage(threadId, taskKey, "user", displayMessage);
 
-  const res = await runAgent(buildPrompt(taskRow, history, opts.message), {
+  const res = await runAgent(buildPrompt(taskRow, history, opts.message, files), {
     agent,
     model,
     effort,
     jobKind: "chat",
-    allowedTools: ["WebSearch", "WebFetch"], // claude: web only — file tools stay off
+    imagePaths: files.map((f) => f.path),
+    // claude: web + (when attachments exist) read-only file access
+    allowedTools: files.length ? ["WebSearch", "WebFetch", "Read"] : ["WebSearch", "WebFetch"],
   });
   if (!res.ok) return { ok: false, error: res.error, jobId: res.jobId };
 

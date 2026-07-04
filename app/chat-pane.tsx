@@ -136,6 +136,8 @@ export function ChatPane({ thread, taskKey, autoMessage, emptyHint, onExecuted, 
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [input, setInput] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
+  const fileRef = useRef<HTMLInputElement>(null);
   const [agent, setAgent] = useState<AgentName>("claude");
   const [model, setModel] = useState("haiku");
   const [effort, setEffort] = useState("");
@@ -215,13 +217,29 @@ export function ChatPane({ thread, taskKey, autoMessage, emptyHint, onExecuted, 
     setShowJump(!atBottom);
   };
 
-  const sendMessage = useCallback(async (m: string) => {
-    if (!m || busy) return;
+  const sendMessage = useCallback(async (m: string, attach: File[] = []) => {
+    if ((!m && attach.length === 0) || busy) return;
     setBusy(true);
     setErr(null);
-    setMsgs((prev) => [...prev, { id: `tmp-${Date.now()}`, role: "user", content: m, createdAt: Date.now() }]);
+    const shown = attach.length ? `${m}\n📎 ${attach.map((f) => f.name).join(", ")}` : m;
+    setMsgs((prev) => [...prev, { id: `tmp-${Date.now()}`, role: "user", content: shown, createdAt: Date.now() }]);
     try {
-      const r = await api("POST", "/api/chat", { thread, taskKey, message: m, agent, model, effort: effort || undefined });
+      let r;
+      if (attach.length) {
+        const fd = new FormData();
+        fd.append("message", m);
+        if (thread) fd.append("thread", thread);
+        if (taskKey) fd.append("taskKey", taskKey);
+        fd.append("agent", agent);
+        fd.append("model", model);
+        if (effort) fd.append("effort", effort);
+        for (const f of attach) fd.append("files", f);
+        const resp = await fetch("/api/chat", { method: "POST", body: fd });
+        if (!resp.ok) throw new Error(await resp.text());
+        r = await resp.json();
+      } else {
+        r = await api("POST", "/api/chat", { thread, taskKey, message: m, agent, model, effort: effort || undefined });
+      }
       if (!r.ok) setErr(r.error || "応答に失敗しました");
       await load();
       onActivity?.();
@@ -240,10 +258,13 @@ export function ChatPane({ thread, taskKey, autoMessage, emptyHint, onExecuted, 
 
   const send = useCallback(() => {
     const m = input.trim();
-    if (!m || busy) return;
+    if ((!m && files.length === 0) || busy) return;
     setInput("");
-    void sendMessage(m);
-  }, [input, busy, sendMessage]);
+    const attach = files;
+    setFiles([]);
+    if (fileRef.current) fileRef.current.value = "";
+    void sendMessage(m || "（添付ファイルを見てください）", attach);
+  }, [input, files, busy, sendMessage]);
 
   const decide = useCallback(async (id: string, decision: "approve" | "reject") => {
     if (deciding || batch) return;
@@ -360,7 +381,33 @@ export function ChatPane({ thread, taskKey, autoMessage, emptyHint, onExecuted, 
         </div>
       )}
       {err && <p className="errline" style={{ marginTop: 8 }}>{err}</p>}
+      {files.length > 0 && (
+        <div className="attachrow">
+          {files.map((f, i) => (
+            <span key={`${f.name}-${i}`} className="attachchip">
+              📎 {f.name}
+              <button onClick={() => setFiles((prev) => prev.filter((_, j) => j !== i))} title="外す">×</button>
+            </span>
+          ))}
+        </div>
+      )}
       <div className="chatbar">
+        <input
+          ref={fileRef}
+          type="file"
+          multiple
+          accept="image/*,.pdf,.txt,.md,.csv"
+          style={{ display: "none" }}
+          onChange={(e) => {
+            const picked = [...(e.target.files ?? [])];
+            if (picked.length) setFiles((prev) => [...prev, ...picked].slice(0, 4));
+          }}
+        />
+        <button
+          className={`btn attachbtn${agent !== "claude" ? " dim" : ""}`}
+          title={agent === "claude" ? "ファイルを添付（画像・PDF・テキスト）" : "添付を読めるのは claude です（他エージェントには内容が渡りません）"}
+          onClick={() => fileRef.current?.click()}
+        >📎</button>
         <div className="agentpick">
           <select value={agent} onChange={(e) => pickAgent(e.target.value as AgentName)} title="エージェント">
             {AGENT_NAMES.map((a) => <option key={a} value={a}>{a}</option>)}
