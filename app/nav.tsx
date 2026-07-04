@@ -17,8 +17,8 @@ const TABS = [
   { href: "/notes", Icon: NoteIcon, label: "ノート" },
 ];
 
-// Sibling app: mnemo (free chat + people knowledge) on the same tailnet host.
-const MNEMO_URL = "https://zundamon-ubuntu-alc6.tail7507d4.ts.net:8443";
+// Sibling app: mnemo — Open WebUI frontend (:443) over the mnemo bridge.
+const MNEMO_URL = "https://zundamon-ubuntu-alc6.tail7507d4.ts.net/";
 
 export function Dock() {
   const path = usePathname();
