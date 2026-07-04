@@ -123,6 +123,7 @@ async function runClaude(prompt: string, o: RunOptions, timeoutMs: number): Prom
   const dataAbs = path.resolve(env.dataDir);
   const args = ["-p", "--output-format", "json", "--permission-mode", "default"];
   args.push("--model", o.model ?? env.claudeModel);
+  if (o.effort) args.push("--effort", o.effort); // low|medium|high|xhigh|max
   if (o.allowedTools?.length) args.push("--allowedTools", ...o.allowedTools);
   if (o.system) args.push("--append-system-prompt", o.system);
   // cwd is the data dir (so uploaded images are inside the workspace and readable);

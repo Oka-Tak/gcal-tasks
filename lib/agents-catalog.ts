@@ -13,12 +13,20 @@ export interface ModelDef {
   defaultEffort?: string;
 }
 
+// claude CLI --effort levels (session-wide thinking depth)
+const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+
 export const AGENT_CATALOG: Record<AgentName, { models: ModelDef[] }> = {
   claude: {
+    // aliases track the latest; full ids pin a specific generation
     models: [
-      { id: "haiku", label: "haiku（軽い）" },
-      { id: "sonnet", label: "sonnet（標準）" },
-      { id: "opus", label: "opus（重い・計画向き）" },
+      { id: "haiku", label: "Haiku 4.5（軽い）", efforts: CLAUDE_EFFORTS, defaultEffort: "medium" },
+      { id: "sonnet", label: "Sonnet 5（標準）", efforts: CLAUDE_EFFORTS, defaultEffort: "medium" },
+      { id: "opus", label: "Opus 4.8（重い）", efforts: CLAUDE_EFFORTS, defaultEffort: "high" },
+      { id: "fable", label: "Fable 5（最上位）", efforts: CLAUDE_EFFORTS, defaultEffort: "high" },
+      { id: "claude-opus-4-7", label: "Opus 4.7", efforts: CLAUDE_EFFORTS, defaultEffort: "high" },
+      { id: "claude-opus-4-6", label: "Opus 4.6", efforts: CLAUDE_EFFORTS, defaultEffort: "high" },
+      { id: "claude-sonnet-4-6", label: "Sonnet 4.6", efforts: CLAUDE_EFFORTS, defaultEffort: "medium" },
     ],
   },
   codex: {
