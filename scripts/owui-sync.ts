@@ -77,6 +77,7 @@ async function main() {
     }
   }
 
+  let failed = 0;
   for (const { abs, rel, collection } of jobs) {
     seen.add(rel);
     const ext = path.extname(abs);
@@ -84,21 +85,29 @@ async function main() {
     const st = await fs.stat(abs);
     if (st.size === 0 || st.size > MAX_BYTES) { skipped++; continue; }
     const prev = state[rel];
-    if (prev && prev.mtimeMs === st.mtimeMs && prev.size === st.size) continue; // unchanged
+    if (prev && prev.mtimeMs === st.mtimeMs && prev.size === st.size) continue; // unchanged (or known-bad)
 
-    if (prev) await removeOwuiFile(prev.collection, prev.fileId).catch(() => {});
+    if (prev?.fileId) await removeOwuiFile(prev.collection, prev.fileId).catch(() => {});
     // flatten the path below the top dir into the filename so citations stay readable
     const filename = rel.split(path.sep).slice(2).join("__") || path.basename(abs);
-    const fileId = await pushLocalFileToOwui(await fs.readFile(abs), filename, collection);
-    state[rel] = { mtimeMs: st.mtimeMs, size: st.size, fileId, collection };
-    pushed++;
-    console.log(`[owui-sync] pushed ${rel} → "${collection}"`);
+    try {
+      const fileId = await pushLocalFileToOwui(await fs.readFile(abs), filename, collection);
+      state[rel] = { mtimeMs: st.mtimeMs, size: st.size, fileId, collection };
+      pushed++;
+      console.log(`[owui-sync] pushed ${rel} → "${collection}"`);
+    } catch (e) {
+      // unparseable content (image-only slides etc.) — record so we don't retry
+      // every run; a changed mtime clears the marker
+      failed++;
+      state[rel] = { mtimeMs: st.mtimeMs, size: st.size, fileId: "", collection };
+      console.log(`[owui-sync] FAILED ${rel}: ${String(e).slice(0, 140)}`);
+    }
   }
 
   // files that vanished from the mirror get detached from RAG too
   for (const rel of Object.keys(state)) {
     if (seen.has(rel)) continue;
-    await removeOwuiFile(state[rel].collection, state[rel].fileId).catch(() => {});
+    if (state[rel].fileId) await removeOwuiFile(state[rel].collection, state[rel].fileId).catch(() => {});
     delete state[rel];
     removed++;
     console.log(`[owui-sync] removed ${rel}`);
@@ -106,7 +115,7 @@ async function main() {
 
   await fs.mkdir(path.dirname(STATE), { recursive: true });
   await fs.writeFile(STATE, JSON.stringify(state, null, 1));
-  console.log(`[owui-sync] done: +${pushed} -${removed} (skipped ${skipped})`);
+  console.log(`[owui-sync] done: +${pushed} -${removed} (skipped ${skipped}, failed ${failed})`);
 }
 
 void main().catch((e) => {

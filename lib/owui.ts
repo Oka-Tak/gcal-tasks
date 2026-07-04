@@ -111,7 +111,11 @@ export async function pushLocalFileToOwui(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ file_id: file.id }),
   }, token);
-  if (!add.ok) throw new Error(`owui knowledge add: HTTP ${add.status} ${(await add.text()).slice(0, 200)}`);
+  if (!add.ok) {
+    // e.g. image-only slides → "content is empty". Remove the orphaned upload.
+    await owuiFetch(`/api/v1/files/${file.id}`, { method: "DELETE" }, token).catch(() => {});
+    throw new Error(`owui knowledge add: HTTP ${add.status} ${(await add.text()).slice(0, 200)}`);
+  }
   return file.id;
 }
 
