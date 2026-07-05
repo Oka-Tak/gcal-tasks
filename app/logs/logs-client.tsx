@@ -67,6 +67,10 @@ const KIND_LABEL: Record<string, string> = {
   work: "💻 作業",
   trip: "🧳 旅行",
   activity: "🏃 活動",
+  move: "🚃 移動",
+  chore: "🧺 家事",
+  dopa: "📱 ドパガキ",
+  r18: "🔞 R18",
   note: "📝 メモ",
 };
 
@@ -87,7 +91,7 @@ const isoLocal = (ms: number) => {
 };
 
 const TIMER_KEY = "kairos-timer"; // {startMs, kind, title} — survives reloads/navigation
-const TIMER_KINDS = ["work", "activity", "meal", "trip", "note"] as const;
+const TIMER_KINDS = ["work", "activity", "meal", "trip", "move", "chore", "dopa", "r18", "note"] as const;
 
 /* ------------------------------------------------------- Studyplus-style timer */
 function TimerCard({ onSaved }: { onSaved: () => void }) {

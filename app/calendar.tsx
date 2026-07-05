@@ -343,7 +343,8 @@ export default function Calendar() {
       meal: "#f2c14e", trip: "#b197fc", note: "#8a94a3",
     };
     const EMOJI: Record<string, string> = {
-      sleep: "😴", meal: "🍙", work: "💻", trip: "🧳", activity: "🏃", note: "📝",
+      sleep: "😴", meal: "🍙", work: "💻", trip: "🧳", activity: "🏃",
+      move: "🚃", chore: "🧺", dopa: "📱", r18: "🔞", note: "📝",
     };
     for (const l of actuals) {
       if (l.startMs == null || l.endMs == null) continue;
