@@ -52,7 +52,8 @@ export async function POST(req: NextRequest) {
   const message = typeof body.message === "string" ? body.message.trim() : "";
   if (!message && files.length === 0)
     return Response.json({ detail: "message required" }, { status: 400 });
-  const result = await sendChat({
+
+  const opts = {
     taskKey: (body.taskKey as string) ?? null,
     thread: (body.thread as string) ?? null,
     message: message || "（添付ファイルを見てください）",
@@ -60,6 +61,37 @@ export async function POST(req: NextRequest) {
     model: typeof body.model === "string" ? body.model : undefined,
     effort: typeof body.effort === "string" ? body.effort : undefined,
     files,
-  });
+  };
+
+  // ?stream=1 → SSE: live narration events ({t:"ev"}) then the result ({t:"done"}).
+  if (new URL(req.url).searchParams.get("stream") === "1") {
+    const enc = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        const send = (obj: unknown) => {
+          try {
+            controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
+          } catch { /* client disconnected — the chat still lands in the DB */ }
+        };
+        const ping = setInterval(() => send({ t: "ping" }), 15_000); // keep proxies alive
+        sendChat({ ...opts, onEvent: (line) => send({ t: "ev", line }) })
+          .then((result) => send({ t: "done", ...result }))
+          .catch((e) => send({ t: "done", ok: false, error: String(e) }))
+          .finally(() => {
+            clearInterval(ping);
+            try { controller.close(); } catch { /* already closed */ }
+          });
+      },
+    });
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      },
+    });
+  }
+
+  const result = await sendChat(opts);
   return Response.json(result);
 }

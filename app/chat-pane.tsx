@@ -142,6 +142,7 @@ export function ChatPane({ thread, taskKey, autoMessage, emptyHint, onExecuted, 
   const [model, setModel] = useState("haiku");
   const [effort, setEffort] = useState("");
   const [busy, setBusy] = useState(false);
+  const [liveLog, setLiveLog] = useState<string[]>([]); // 実行中の動作ログ (SSE)
   const [deciding, setDeciding] = useState<string | null>(null);
   const [batch, setBatch] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -223,8 +224,10 @@ export function ChatPane({ thread, taskKey, autoMessage, emptyHint, onExecuted, 
     setErr(null);
     const shown = attach.length ? `${m}\n📎 ${attach.map((f) => f.name).join(", ")}` : m;
     setMsgs((prev) => [...prev, { id: `tmp-${Date.now()}`, role: "user", content: shown, createdAt: Date.now() }]);
+    setLiveLog([]);
     try {
-      let r;
+      // ?stream=1 → SSE: {t:"ev"} 動作ログ行 → {t:"done", ...結果}
+      let resp: Response;
       if (attach.length) {
         const fd = new FormData();
         fd.append("message", m);
@@ -234,11 +237,33 @@ export function ChatPane({ thread, taskKey, autoMessage, emptyHint, onExecuted, 
         fd.append("model", model);
         if (effort) fd.append("effort", effort);
         for (const f of attach) fd.append("files", f);
-        const resp = await fetch("/api/chat", { method: "POST", body: fd });
-        if (!resp.ok) throw new Error(await resp.text());
-        r = await resp.json();
+        resp = await fetch("/api/chat?stream=1", { method: "POST", body: fd });
       } else {
-        r = await api("POST", "/api/chat", { thread, taskKey, message: m, agent, model, effort: effort || undefined });
+        resp = await fetch("/api/chat?stream=1", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ thread, taskKey, message: m, agent, model, effort: effort || undefined }),
+        });
+      }
+      if (!resp.ok || !resp.body) throw new Error(await resp.text());
+      const reader = resp.body.getReader();
+      const dec = new TextDecoder();
+      let sse = "";
+      let r: { ok?: boolean; error?: string } = {};
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        sse += dec.decode(value, { stream: true });
+        let nl;
+        while ((nl = sse.indexOf("\n\n")) >= 0) {
+          const raw = sse.slice(0, nl);
+          sse = sse.slice(nl + 2);
+          if (!raw.startsWith("data: ")) continue;
+          let ev: { t?: string; line?: string; ok?: boolean; error?: string };
+          try { ev = JSON.parse(raw.slice(6)); } catch { continue; }
+          if (ev.t === "ev" && ev.line) setLiveLog((prev) => [...prev.slice(-40), ev.line as string]);
+          else if (ev.t === "done") r = ev;
+        }
       }
       if (!r.ok) setErr(r.error || "応答に失敗しました");
       await load();
@@ -247,6 +272,7 @@ export function ChatPane({ thread, taskKey, autoMessage, emptyHint, onExecuted, 
       setErr(String(e));
     } finally {
       setBusy(false);
+      setLiveLog([]);
     }
   }, [busy, thread, taskKey, agent, model, effort, load, onActivity]);
 
@@ -362,6 +388,12 @@ export function ChatPane({ thread, taskKey, autoMessage, emptyHint, onExecuted, 
             <div className="cbody">
               <div className="chead"><span className="cname">{agent}</span></div>
               <div className="ctext thinking">考え中…</div>
+              {liveLog.length > 0 && (
+                // column-reverse + 逆順配列 = 常に最新行へ自動追従
+                <div className="livelog">
+                  {[...liveLog].reverse().map((l, i) => <div key={liveLog.length - i} className="liveline">{l}</div>)}
+                </div>
+              )}
             </div>
           </div>
         )}

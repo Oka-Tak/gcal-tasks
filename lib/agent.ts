@@ -30,6 +30,8 @@ export interface RunOptions {
   imagePaths?: string[]; // absolute paths the agent may read (claude reads via Read)
   timeoutMs?: number;
   jobKind?: string; // for the agent_jobs ledger
+  /** Live narration (claude only): intermediate text + tool calls, one line per event. */
+  onEvent?: (line: string) => void;
 }
 
 export interface RunResult {
@@ -119,9 +121,93 @@ function parseKilo(s: string): number {
   return Math.round(/k$/i.test(s) ? n * 1_000 : /m$/i.test(s) ? n * 1_000_000 : n);
 }
 
+/** One-line summary of a tool call for the live narration. */
+function toolLine(name: string, input: Record<string, unknown> | undefined): string {
+  const s = (v: unknown) => String(v ?? "").split("\n")[0].slice(0, 90);
+  const base = (v: unknown) => s(v).split("/").pop() ?? "";
+  if (name === "WebSearch") return `🔍 検索: ${s(input?.query)}`;
+  if (name === "WebFetch") return `🌐 取得: ${s(input?.url)}`;
+  if (name === "Read") return `📖 読込: ${base(input?.file_path)}`;
+  if (name === "Bash") return `🔧 実行: ${s(input?.command)}`;
+  return `🔧 ${name}`;
+}
+
+/**
+ * stream-json variant of spawnCapture: forwards intermediate assistant text and
+ * tool calls to `onEvent` while running, and returns a Captured whose stdout is
+ * the CLI's final "result" event line — the same JSON envelope shape the plain
+ * json mode prints, so parseClaudeOutput works unchanged.
+ */
+function spawnClaudeStream(
+  bin: string,
+  args: string[],
+  opts: { cwd?: string; timeoutMs: number; input?: string },
+  onEvent: (line: string) => void,
+): Promise<Captured> {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(bin, args, { cwd: opts.cwd, env: process.env, stdio: ["pipe", "pipe", "pipe"] });
+    } catch (e) {
+      resolve({ code: -1, stdout: "", stderr: String(e), timedOut: false });
+      return;
+    }
+    let buf = "";
+    let stderr = "";
+    let resultLine = "";
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, opts.timeoutMs);
+    child.stdout.on("data", (d) => {
+      buf += d.toString();
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (!line.trim()) continue;
+        let obj: { type?: string; message?: { content?: { type?: string; text?: string; name?: string; input?: Record<string, unknown> }[] } };
+        try {
+          obj = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (obj.type === "assistant") {
+          for (const item of obj.message?.content ?? []) {
+            // the final {reply,actions} envelope also arrives as assistant text
+            // (bare or ```json-fenced) — keep it out of the live log
+            if (item.type === "text" && item.text?.trim()
+              && !item.text.trim().startsWith("{") && !item.text.trim().startsWith("```"))
+              onEvent(item.text.trim());
+            else if (item.type === "tool_use") onEvent(toolLine(String(item.name), item.input));
+          }
+        } else if (obj.type === "result") {
+          resultLine = line;
+        }
+      }
+    });
+    child.stderr.on("data", (d) => (stderr += d.toString()));
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      resolve({ code: -1, stdout: resultLine, stderr: stderr + String(e), timedOut });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ code: code ?? -1, stdout: resultLine, stderr, timedOut });
+    });
+    if (child.stdin) {
+      if (opts.input) child.stdin.write(opts.input);
+      child.stdin.end();
+    }
+  });
+}
+
 async function runClaude(prompt: string, o: RunOptions, timeoutMs: number): Promise<Captured> {
   const dataAbs = path.resolve(env.dataDir);
-  const args = ["-p", "--output-format", "json", "--permission-mode", "default"];
+  const stream = !!o.onEvent;
+  const args = ["-p", "--output-format", stream ? "stream-json" : "json", "--permission-mode", "default"];
+  if (stream) args.push("--verbose"); // stream-json requires it
   args.push("--model", o.model ?? env.claudeModel);
   if (o.effort) args.push("--effort", o.effort); // low|medium|high|xhigh|max
   if (o.allowedTools?.length) args.push("--allowedTools", ...o.allowedTools);
@@ -129,11 +215,10 @@ async function runClaude(prompt: string, o: RunOptions, timeoutMs: number): Prom
   // cwd is the data dir (so uploaded images are inside the workspace and readable);
   // --add-dir (absolute) makes that explicit for the Read tool.
   args.push("--add-dir", dataAbs);
-  return spawnCapture(env.claudeBin, args, {
-    cwd: dataAbs,
-    timeoutMs,
-    input: prompt,
-  });
+  const spawnOpts = { cwd: dataAbs, timeoutMs, input: prompt };
+  return stream
+    ? spawnClaudeStream(env.claudeBin, args, spawnOpts, o.onEvent as (line: string) => void)
+    : spawnCapture(env.claudeBin, args, spawnOpts);
 }
 
 async function runCodex(prompt: string, o: RunOptions, timeoutMs: number): Promise<Captured> {

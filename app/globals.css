@@ -314,6 +314,10 @@ textarea.mono,input.mono{font-family:var(--mono);font-size:12px}
 .ctime{font-size:10.5px;color:var(--muted);font-family:var(--mono)}
 .ctext{font-size:13.5px;line-height:1.6;white-space:pre-wrap;word-break:break-word;margin-top:1px}
 .ctext.thinking{color:var(--muted);font-style:italic}
+/* 実行中の動作ログ (SSE実況) — 折り返しつつ最新が見える小窓 */
+.livelog{margin-top:6px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:color-mix(in srgb, var(--muted) 6%, transparent);max-height:180px;overflow-y:auto;font-size:12px;line-height:1.5;color:var(--muted);display:flex;flex-direction:column-reverse}
+.liveline{white-space:pre-wrap;word-break:break-word}
+.liveline+.liveline{margin-top:2px}
 .cusage{font-size:10.5px;color:var(--muted);font-family:var(--mono);margin-top:3px}
 /* agent proposal cards — Slack-attachment style, indented under the message */
 .proposal{align-self:stretch;margin-left:52px;border:1px solid var(--line);

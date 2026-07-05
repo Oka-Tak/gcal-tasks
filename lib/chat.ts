@@ -480,6 +480,7 @@ export async function sendChat(opts: {
   model?: string;
   effort?: string;
   files?: ChatFile[]; // uploaded attachments (claude reads them via Read)
+  onEvent?: (line: string) => void; // live narration (claude only)
 }): Promise<ChatResult> {
   const threadId = resolveThread(opts);
   const taskKey = opts.thread ? null : opts.taskKey || null;
@@ -502,6 +503,7 @@ export async function sendChat(opts: {
     imagePaths: files.map((f) => f.path),
     // claude: web + (when attachments exist) read-only file access
     allowedTools: files.length ? ["WebSearch", "WebFetch", "Read"] : ["WebSearch", "WebFetch"],
+    onEvent: opts.onEvent,
   });
   if (!res.ok) return { ok: false, error: res.error, jobId: res.jobId };
 
