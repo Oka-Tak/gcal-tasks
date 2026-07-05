@@ -77,7 +77,13 @@ async function main() {
     }
   }
 
+  const saveState = async () => {
+    await fs.mkdir(path.dirname(STATE), { recursive: true });
+    await fs.writeFile(STATE, JSON.stringify(state, null, 1));
+  };
+
   let failed = 0;
+  let sinceSave = 0;
   for (const { abs, rel, collection } of jobs) {
     seen.add(rel);
     const ext = path.extname(abs);
@@ -102,6 +108,11 @@ async function main() {
       state[rel] = { mtimeMs: st.mtimeMs, size: st.size, fileId: "", collection };
       console.log(`[owui-sync] FAILED ${rel}: ${String(e).slice(0, 140)}`);
     }
+    // the initial index runs for hours — persist progress so a kill resumes
+    if (++sinceSave >= 25) {
+      sinceSave = 0;
+      await saveState();
+    }
   }
 
   // files that vanished from the mirror get detached from RAG too
@@ -113,8 +124,7 @@ async function main() {
     console.log(`[owui-sync] removed ${rel}`);
   }
 
-  await fs.mkdir(path.dirname(STATE), { recursive: true });
-  await fs.writeFile(STATE, JSON.stringify(state, null, 1));
+  await saveState();
   console.log(`[owui-sync] done: +${pushed} -${removed} (skipped ${skipped}, failed ${failed})`);
 }
 
