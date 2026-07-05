@@ -203,6 +203,90 @@ function spawnClaudeStream(
   });
 }
 
+/**
+ * codex `--json` JSONL variant: forwards search queries / executed commands /
+ * intermediate narration to onEvent; usage comes from the turn.completed event
+ * (the stderr "tokens used" footer doesn't appear in --json mode).
+ */
+function spawnCodexStream(
+  bin: string,
+  args: string[],
+  opts: { cwd?: string; timeoutMs: number; input?: string },
+  onEvent: (line: string) => void,
+): Promise<Captured & { eventUsage?: Partial<AgentUsage> }> {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(bin, args, { cwd: opts.cwd, env: process.env, stdio: ["pipe", "pipe", "pipe"] });
+    } catch (e) {
+      resolve({ code: -1, stdout: "", stderr: String(e), timedOut: false });
+      return;
+    }
+    let buf = "";
+    let stdout = "";
+    let stderr = "";
+    let eventUsage: Partial<AgentUsage> | undefined;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, opts.timeoutMs);
+    const short = (v: unknown) => String(v ?? "").split("\n")[0].slice(0, 90);
+    child.stdout.on("data", (d) => {
+      const chunk = d.toString();
+      stdout += chunk;
+      buf += chunk;
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (!line.trim()) continue;
+        let ev: {
+          type?: string;
+          item?: { type?: string; text?: string; query?: string; command?: string };
+          usage?: { input_tokens?: number; cached_input_tokens?: number; output_tokens?: number };
+        };
+        try {
+          ev = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        const item = ev.item ?? {};
+        if (ev.type === "item.completed" && item.type === "web_search") {
+          onEvent(`🔍 検索: ${short(item.query ?? item.text)}`);
+        } else if (ev.type === "item.started" && item.type === "command_execution") {
+          onEvent(`🔧 実行: ${short(item.command)}`);
+        } else if (ev.type === "item.completed" && item.type === "reasoning" && item.text) {
+          onEvent(`💭 ${short(item.text)}`);
+        } else if (ev.type === "item.completed" && item.type === "agent_message" && item.text) {
+          const t = item.text.trim();
+          // the final envelope also lands here — keep raw JSON out of the log
+          if (!t.startsWith("{") && !t.startsWith("```")) onEvent(t);
+        } else if (ev.type === "turn.completed" && ev.usage) {
+          eventUsage = {
+            inputTokens: ev.usage.input_tokens ?? 0,
+            cachedTokens: ev.usage.cached_input_tokens || undefined,
+            outputTokens: ev.usage.output_tokens,
+          };
+        }
+      }
+    });
+    child.stderr.on("data", (d) => (stderr += d.toString()));
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      resolve({ code: -1, stdout, stderr: stderr + String(e), timedOut, eventUsage });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ code: code ?? -1, stdout, stderr, timedOut, eventUsage });
+    });
+    if (child.stdin) {
+      if (opts.input) child.stdin.write(opts.input);
+      child.stdin.end();
+    }
+  });
+}
+
 async function runClaude(prompt: string, o: RunOptions, timeoutMs: number): Promise<Captured> {
   const dataAbs = path.resolve(env.dataDir);
   const stream = !!o.onEvent;
@@ -231,11 +315,13 @@ async function runCodex(prompt: string, o: RunOptions, timeoutMs: number): Promi
   args.push("-c", "tools.web_search=true"); // live web search (codex exec has no --search flag)
   if (o.model) args.push("-m", o.model);
   if (o.effort) args.push("-c", `model_reasoning_effort="${o.effort}"`);
-  const cap = await spawnCapture(env.codexBin, args, {
-    cwd: dataAbs,
-    timeoutMs,
-    input: prompt,
-  });
+  const cap = o.onEvent
+    ? await spawnCodexStream(env.codexBin, [...args, "--json"], { cwd: dataAbs, timeoutMs, input: prompt }, o.onEvent)
+    : await spawnCapture(env.codexBin, args, {
+        cwd: dataAbs,
+        timeoutMs,
+        input: prompt,
+      });
   let text = "";
   try {
     text = (await fs.readFile(outFile, "utf8")).trim();
@@ -248,9 +334,11 @@ async function runCodex(prompt: string, o: RunOptions, timeoutMs: number): Promi
     // best effort
   }
   // codex writes its banner/footer to stderr; the footer carries the only
-  // usage figure it reports ("tokens used\n6,867").
+  // usage figure it reports ("tokens used\n6,867"). In --json mode the
+  // turn.completed event provides a richer breakdown instead.
   const tok = cap.stderr.match(/tokens used[:\s]*\n?\s*([\d,]+)/i);
-  const usage = tok ? { totalTokens: Number(tok[1].replace(/,/g, "")) } : undefined;
+  const eventUsage = (cap as Captured & { eventUsage?: Partial<AgentUsage> }).eventUsage;
+  const usage = eventUsage ?? (tok ? { totalTokens: Number(tok[1].replace(/,/g, "")) } : undefined);
   return { ...cap, stdout: text || cap.stdout, usage };
 }
 
