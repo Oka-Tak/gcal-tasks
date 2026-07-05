@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { execFile } from "node:child_process";
 import { owuiSupportedExt, pushLocalFileToOwui, removeOwuiFile } from "../lib/owui";
 
 /**
@@ -16,6 +17,32 @@ import { owuiSupportedExt, pushLocalFileToOwui, removeOwuiFile } from "../lib/ow
 const ROOT = process.env.KAIROS_SYNC_ROOT ?? path.join(os.homedir(), "onedrive-sync");
 const STATE = path.join(os.homedir(), ".local", "state", "owui-sync.json");
 const MAX_BYTES = 50_000_000;
+
+// Formats Open WebUI can't extract on this box (its loaders route through
+// unstructured/docling, unavailable) — we extract text ourselves via
+// scripts/extract-text.py and push only the text, so OWUI never does heavy
+// per-file parsing. docx/txt/md/html OWUI handles fine, so those go raw.
+const SELF_EXTRACT = new Set([".pptx", ".pdf", ".xlsx", ".csv"]);
+const EXTRACT_PY = path.join(__dirname, "extract-text.py");
+const EXTRACT_PYTHON =
+  process.env.KAIROS_EXTRACT_PYTHON ??
+  path.join(os.homedir(), ".local", "share", "uv", "tools", "open-webui", "bin", "python");
+// pace pushes so OWUI's CPU embedding never saturates the box (load hit 21 once)
+const THROTTLE_MS = Number(process.env.KAIROS_SYNC_THROTTLE_MS ?? 700);
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function extractText(abs: string): Promise<string | null> {
+  // resolves to text (may be ""), or null on a deterministic extractor error
+  return new Promise((resolve) => {
+    execFile(
+      EXTRACT_PYTHON,
+      [EXTRACT_PY, abs],
+      { maxBuffer: 8_000_000, timeout: 120_000 },
+      (err, stdout) => resolve(err ? null : stdout),
+    );
+  });
+}
 
 interface Entry { mtimeMs: number; size: number; fileId: string; collection: string }
 
@@ -82,37 +109,58 @@ async function main() {
     await fs.writeFile(STATE, JSON.stringify(state, null, 1));
   };
 
-  let failed = 0;
+  let failed = 0, transient = 0;
   let sinceSave = 0;
+  const record = async (rel: string, e: Entry) => {
+    state[rel] = e;
+    if (++sinceSave >= 25) { sinceSave = 0; await saveState(); }
+  };
   for (const { abs, rel, collection } of jobs) {
     seen.add(rel);
-    const ext = path.extname(abs);
+    const ext = path.extname(abs).toLowerCase();
     if (!owuiSupportedExt(ext)) { skipped++; continue; }
     const st = await fs.stat(abs);
     if (st.size === 0 || st.size > MAX_BYTES) { skipped++; continue; }
     const prev = state[rel];
     if (prev && prev.mtimeMs === st.mtimeMs && prev.size === st.size) continue; // unchanged (or known-bad)
 
-    if (prev?.fileId) await removeOwuiFile(prev.collection, prev.fileId).catch(() => {});
     // flatten the path below the top dir into the filename so citations stay readable
-    const filename = rel.split(path.sep).slice(2).join("__") || path.basename(abs);
+    const flat = rel.split(path.sep).slice(2).join("__") || path.basename(abs);
+
+    // build the payload: extract ourselves for OWUI-hostile formats, else raw
+    let buf: Buffer;
+    let filename = flat;
+    if (SELF_EXTRACT.has(ext)) {
+      const text = await extractText(abs);
+      if (text === null || !text.trim()) {
+        // deterministic: extractor errored, or image-only / no text. Record a
+        // permanent skip so we don't retry every run (changed mtime clears it).
+        if (prev?.fileId) await removeOwuiFile(prev.collection, prev.fileId).catch(() => {});
+        failed++;
+        console.log(`[owui-sync] no-text ${rel}`);
+        await record(rel, { mtimeMs: st.mtimeMs, size: st.size, fileId: "", collection });
+        continue;
+      }
+      buf = Buffer.from(text, "utf8");
+      filename = flat.replace(/\.[^.]*$/, "") + ".txt";
+    } else {
+      buf = await fs.readFile(abs);
+    }
+
+    if (prev?.fileId) await removeOwuiFile(prev.collection, prev.fileId).catch(() => {});
     try {
-      const fileId = await pushLocalFileToOwui(await fs.readFile(abs), filename, collection);
-      state[rel] = { mtimeMs: st.mtimeMs, size: st.size, fileId, collection };
+      const fileId = await pushLocalFileToOwui(buf, filename, collection);
       pushed++;
       console.log(`[owui-sync] pushed ${rel} → "${collection}"`);
+      await record(rel, { mtimeMs: st.mtimeMs, size: st.size, fileId, collection });
     } catch (e) {
-      // unparseable content (image-only slides etc.) — record so we don't retry
-      // every run; a changed mtime clears the marker
-      failed++;
-      state[rel] = { mtimeMs: st.mtimeMs, size: st.size, fileId: "", collection };
-      console.log(`[owui-sync] FAILED ${rel}: ${String(e).slice(0, 140)}`);
+      // OWUI push failed (busy/warming up) — TRANSIENT. Do NOT record, so the
+      // next run retries instead of burning it as a permanent skip.
+      transient++;
+      console.log(`[owui-sync] retry-later ${rel}: ${String(e).slice(0, 120)}`);
     }
-    // the initial index runs for hours — persist progress so a kill resumes
-    if (++sinceSave >= 25) {
-      sinceSave = 0;
-      await saveState();
-    }
+    // pace OWUI's CPU embedding so it never saturates the box
+    await sleep(THROTTLE_MS);
   }
 
   // files that vanished from the mirror get detached from RAG too
@@ -125,7 +173,7 @@ async function main() {
   }
 
   await saveState();
-  console.log(`[owui-sync] done: +${pushed} -${removed} (skipped ${skipped}, failed ${failed})`);
+  console.log(`[owui-sync] done: +${pushed} -${removed} (skipped ${skipped}, no-text ${failed}, retry-later ${transient})`);
 }
 
 void main().catch((e) => {

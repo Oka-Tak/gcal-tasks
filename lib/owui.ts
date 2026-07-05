@@ -87,6 +87,21 @@ export function owuiSupportedExt(ext: string): boolean {
   return ext.toLowerCase() in MIME;
 }
 
+/** Poll a freshly-uploaded file until OWUI has finished extracting its text. */
+async function waitForFileReady(token: string, fileId: string): Promise<void> {
+  for (let i = 0; i < 40; i++) {
+    const r = await owuiFetch(`/api/v1/files/${fileId}`, {}, token);
+    if (r.ok) {
+      const d = (await r.json()) as { data?: { status?: string; content?: string } };
+      const status = d.data?.status;
+      const hasContent = !!(d.data?.content && d.data.content.trim());
+      if (status === "completed" || hasContent) return;
+      if (status === "failed") return; // let the add step surface the real error
+    }
+    await new Promise((res) => setTimeout(res, 750));
+  }
+}
+
 /**
  * Upload an arbitrary local file into a collection (the OneDrive sync path).
  * Returns the Open WebUI file id so callers can replace it on change.
@@ -106,6 +121,9 @@ export async function pushLocalFileToOwui(
   const up = await owuiFetch("/api/v1/files/", { method: "POST", body: fd }, token);
   if (!up.ok) throw new Error(`owui file upload: HTTP ${up.status} ${(await up.text()).slice(0, 200)}`);
   const file = (await up.json()) as { id: string };
+  // OWUI extracts file text ASYNChronously; adding to a collection before it
+  // finishes gets rejected as "content empty". Wait for the extraction to land.
+  await waitForFileReady(token, file.id);
   const add = await owuiFetch(`/api/v1/knowledge/${kid}/file/add`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
