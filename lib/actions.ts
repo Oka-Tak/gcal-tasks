@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import { and, asc, eq } from "drizzle-orm";
 import { db } from "./db";
 import { calendars, events, proposals, tasklists, tasks } from "./db/schema";
+import { createExpense } from "./money";
+import { isExpenseCategory } from "./money-shared";
 import {
   createEvent,
   createTask,
@@ -20,14 +22,15 @@ import {
  * because the world may have changed in between.
  */
 
-export type ActionKind = "create_task" | "update_task" | "create_event" | "update_event";
-const KINDS: readonly string[] = ["create_task", "update_task", "create_event", "update_event"];
+export type ActionKind = "create_task" | "update_task" | "create_event" | "update_event" | "create_expense";
+const KINDS: readonly string[] = ["create_task", "update_task", "create_event", "update_event", "create_expense"];
 
 export const KIND_LABEL: Record<ActionKind, string> = {
   create_task: "タスク作成",
   update_task: "タスク更新",
   create_event: "予定作成",
   update_event: "予定変更",
+  create_expense: "支出記録",
 };
 
 /** Prompt fragment: the output contract the chat agent must follow. */
@@ -67,7 +70,12 @@ export const ACTION_SPEC = `## 出力形式（厳守）
 4. 予定変更（リスケなど）
    {"kind":"update_event","summary":"…","account":"…","calendarId":"…","id":"…", <変更するフィールドのみ>}
    - 変更可: title, start, end, allDay, description, location。
-   - start / end を変えるときは必ず両方を指定する。`;
+   - start / end を変えるときは必ず両方を指定する。
+5. 支出記録（「昼飯800円」「コンビニで480円使った」等のお金の話）
+   {"kind":"create_expense","summary":"…","amountYen":800,
+    "category":"food|cafe|daily|transport|fun|book|sub|social|other",
+    "title":"店名や品目","when":"2026-07-06T12:30:00+09:00"}
+   - title / when は任意（when 省略時は今）。返金・収入は amountYen を負にする。`;
 
 /* ------------------------------------------------------------- validation */
 
@@ -307,6 +315,25 @@ function validateUpdateEvent(r: Raw): Valid | Invalid {
   return { ok: true, kind: "update_event", summary: "", payload };
 }
 
+function validateCreateExpense(r: Raw): Valid | Invalid {
+  const amountYen = typeof r.amountYen === "number" && Number.isFinite(r.amountYen) && r.amountYen !== 0
+    ? Math.round(r.amountYen)
+    : null;
+  if (amountYen == null) return bad("amountYen は 0 以外の数値です");
+  if (Math.abs(amountYen) > 10_000_000) return bad("amountYen が大きすぎます");
+  if (!isExpenseCategory(r.category)) return bad(`category が不正です: ${String(r.category)}`);
+  const payload: Raw = { amountYen, category: r.category };
+  if (r.title != null) {
+    if (typeof r.title !== "string") return bad("title は文字列です");
+    payload.title = r.title.slice(0, 200);
+  }
+  if (r.when != null) {
+    if (typeof r.when !== "string" || !isDateTime(r.when)) return bad("when は RFC3339 日時です");
+    payload.when = r.when;
+  }
+  return { ok: true, kind: "create_expense", summary: "", payload };
+}
+
 /** Validate one raw action from the agent. Checks shape AND that IDs exist in the mirror. */
 export function validateAction(raw: unknown): Valid | Invalid {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return bad("アクションはオブジェクトです");
@@ -318,6 +345,7 @@ export function validateAction(raw: unknown): Valid | Invalid {
     kind === "create_task" ? validateCreateTask(r)
     : kind === "update_task" ? validateUpdateTask(r)
     : kind === "create_event" ? validateCreateEvent(r)
+    : kind === "create_expense" ? validateCreateExpense(r)
     : validateUpdateEvent(r);
   if (!v.ok) return { ok: false, error: `${KIND_LABEL[kind as ActionKind]}: ${v.error}` };
   v.summary = reqStr(r.summary) ?? KIND_LABEL[v.kind];
@@ -337,6 +365,14 @@ async function runAction(kind: ActionKind, p: Raw): Promise<unknown> {
       const { title, ...rest } = p;
       return createEvent({ ...rest, summary: title } as unknown as EventWrite);
     }
+    case "create_expense":
+      return createExpense({
+        amountYen: p.amountYen as number,
+        category: p.category as string,
+        title: (p.title as string) ?? null,
+        whenMs: p.when ? Date.parse(p.when as string) : undefined,
+        source: "agent",
+      });
     case "update_event": {
       // Merge with the current row so the Google PATCH body is complete and the
       // re-sync window can be computed even when only e.g. the title changes.

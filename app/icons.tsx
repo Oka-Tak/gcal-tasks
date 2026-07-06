@@ -59,6 +59,13 @@ export const NoteIcon = ({ size }: { size?: number }) => (
   </Svg>
 );
 
+export const CoinIcon = ({ size }: { size?: number }) => (
+  <Svg size={size}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 7.5v9M9.5 9.5h4a1.8 1.8 0 0 1 0 3.6h-3a1.8 1.8 0 0 0 0 3.6h4" />
+  </Svg>
+);
+
 export const CheckCircleIcon = ({ size }: { size?: number }) => (
   <Svg size={size}>
     <circle cx="12" cy="12" r="9" />

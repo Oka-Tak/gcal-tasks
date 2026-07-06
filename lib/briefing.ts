@@ -6,6 +6,7 @@ import { events, logs, tasks } from "./db/schema";
 import { env } from "./env";
 import { pushEnabled, sendPush } from "./notify";
 import { runAgent } from "./agent";
+import { yesterdaySpendLine } from "./money";
 
 /**
  * 朝ブリーフィング: 毎朝 BRIEFING_HOUR に ntfy へ「今日の予定 / 近い締切 /
@@ -93,6 +94,8 @@ function yesterdayRecap(now: Date): string[] {
     .slice(0, 5)
     .map(([k, m]) => `${KIND_JP[k] ?? k} ${m >= 60 ? `${Math.floor(m / 60)}h${pad(m % 60)}m` : `${m}m`}`);
   if (parts.length) out.push(`・昨日の実績: ${parts.join(" / ")}`);
+  const spend = yesterdaySpendLine(now);
+  if (spend) out.push(spend);
   return out;
 }
 

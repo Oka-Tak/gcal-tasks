@@ -251,3 +251,26 @@ export const chats = sqliteTable(
   },
   (t) => [index("chats_thread").on(t.threadId)],
 );
+
+/**
+ * お金管理（軽量ログ型）: 支出1件=1行。amountYen は支出が正、返金・収入は負。
+ * category は UI の定義リスト（food/daily/…）が実質の型。レシート等のスクショ
+ * から AI 取り込みした場合は source="screenshot" + imagePath を持つ。
+ */
+export const expenses = sqliteTable(
+  "expenses",
+  {
+    id: text("id").primaryKey(), // uuid
+    amountYen: integer("amount_yen").notNull(),
+    category: text("category").notNull(), // food | cafe | daily | transport | fun | book | sub | social | other
+    title: text("title"), // 店名や品目 例 "セブン 昼食"
+    note: text("note"),
+    whenMs: integer("when_ms").notNull(), // 支払い日時 (epoch ms)
+    source: text("source"), // manual | screenshot | agent
+    imagePath: text("image_path"),
+    createdAt: integer("created_at"),
+    updatedAt: integer("updated_at"),
+    deletedAt: integer("deleted_at"),
+  },
+  (t) => [index("expenses_when").on(t.whenMs)],
+);
