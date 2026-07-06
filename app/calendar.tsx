@@ -102,6 +102,18 @@ async function api(method: string, url: string, body?: unknown) {
   return r.status === 204 ? null : r.json();
 }
 
+/** 起動即描画のための localStorage キャッシュ (stale-while-revalidate)。 */
+const CACHE_KEY = "kairos-cache-v1";
+interface CacheShape {
+  accounts: Account[];
+  calendars: Cal[];
+  events: Ev[];
+  lists: ListMeta[];
+  tasks: Task[];
+  actuals: ActualLog[];
+  savedAt: number;
+}
+
 /* =================================================================== app */
 export default function Calendar() {
   const [authed, setAuthed] = useState<boolean | null>(null);
@@ -128,6 +140,7 @@ export default function Calendar() {
       const st = await fetch("/api/status").then((r) => r.json());
       setAccounts(st.accounts || []);
       setAuthed(!!st.authed);
+      if (!st.authed) localStorage.removeItem(CACHE_KEY); // ログアウト状態でキャッシュを残さない
     })().catch(() => setAuthed(false));
   }, []);
 
@@ -139,6 +152,20 @@ export default function Calendar() {
     if (window.matchMedia("(max-width: 720px)").matches) setView("day");
     if (new URLSearchParams(window.location.search).get("pane") === "tasks") setPane("tasks");
     if (localStorage.getItem("kairos-show-actual") === "1") setShowActual(true);
+    // stale-while-revalidate: 前回のデータを即座に表示し、裏で reload() が置き換える。
+    // authed も楽観的に true にして全面スピナーを飛ばす（未ログインなら /api/status が折り返す）。
+    try {
+      const c = JSON.parse(localStorage.getItem(CACHE_KEY) ?? "null") as CacheShape | null;
+      if (c && Date.now() - (c.savedAt ?? 0) < 7 * 86_400_000) {
+        setAccounts(c.accounts ?? []);
+        setCalendars(c.calendars ?? []);
+        setEvents(c.events ?? []);
+        setLists(c.lists ?? []);
+        setTasks(c.tasks ?? []);
+        setActuals(c.actuals ?? []);
+        setAuthed(true);
+      }
+    } catch { /* 壊れたキャッシュは無視 */ }
   }, []);
   const pickActual = (on: boolean) => {
     setShowActual(on);
@@ -155,19 +182,32 @@ export default function Calendar() {
   const reload = useCallback(async () => {
     try {
       const [min, max] = rangeFor(view, anchor);
-      const evs = await api("GET", `/api/events?timeMin=${enc(min.toISOString())}&timeMax=${enc(max.toISOString())}`);
+      // 5系統を並列に（以前は直列の滝で体感が重かった）
+      const [evs, cals, lg, tk, st] = await Promise.all([
+        api("GET", `/api/events?timeMin=${enc(min.toISOString())}&timeMax=${enc(max.toISOString())}`),
+        api("GET", "/api/calendars"),
+        api("GET", `/api/logs?timeMin=${enc(min.toISOString())}&timeMax=${enc(max.toISOString())}`),
+        api("GET", "/api/tasks"),
+        fetch("/api/status").then((r) => r.json()),
+      ]);
       setEvents(evs);
-      setCalendars(await api("GET", "/api/calendars"));
-      const lg = await api("GET", `/api/logs?timeMin=${enc(min.toISOString())}&timeMax=${enc(max.toISOString())}`);
+      setCalendars(cals);
       setActuals(lg.logs || []);
-      await reloadTasks();
-      const st = await fetch("/api/status").then((r) => r.json());
+      setLists(tk.lists);
+      setTasks(tk.tasks);
       setAccounts(st.accounts || []);
+      // 次回起動を即描画するためのキャッシュ (stale-while-revalidate)
+      try {
+        localStorage.setItem(CACHE_KEY, JSON.stringify({
+          accounts: st.accounts || [], calendars: cals, events: evs,
+          lists: tk.lists, tasks: tk.tasks, actuals: lg.logs || [], savedAt: Date.now(),
+        } satisfies CacheShape));
+      } catch { /* 容量超過などは無視（表示には影響しない） */ }
     } catch (e) {
       if ((e as { unauth?: boolean })?.unauth) setAuthed(false);
       else console.error(e);
     }
-  }, [view, anchor, reloadTasks]);
+  }, [view, anchor]);
 
   useEffect(() => {
     // Data-fetch effect: reload() awaits the network before any setState, so the
