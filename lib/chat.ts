@@ -237,7 +237,12 @@ function describeTargets(): string {
   return lines.join("\n");
 }
 
-/** Next 7 days of events from the local mirror (freshest after the UI syncs). */
+/**
+ * Upcoming events from the local mirror: the next 7 days in full detail
+ * (IDs included so update_event works), then a compact list out to 30 days —
+ * the agent used to believe the world ended at day 7 and told the user the
+ * mirror had nothing beyond it.
+ */
 function upcomingEvents(): string {
   const now = Date.now();
   const rows = db
@@ -247,30 +252,39 @@ function upcomingEvents(): string {
       and(
         isNull(events.deletedAt),
         gt(events.endMs, now),
-        lt(events.startMs, now + 7 * 86_400_000),
+        lt(events.startMs, now + 30 * 86_400_000),
       ),
     )
     .orderBy(asc(events.startMs))
-    .limit(40)
+    .limit(140)
     .all();
-  if (!rows.length) return "（今後7日間の予定はありません）";
-  return rows
-    .map((e) =>
-      JSON.stringify({
-        account: e.account,
-        calendarId: e.calendarId,
-        id: e.googleId,
-        title: e.summary,
-        start: e.start,
-        end: e.end,
-        allDay: !!e.allDay,
-      }),
-    )
-    .join("\n");
+  if (!rows.length) return "（今後30日間の予定はありません）";
+  const week = now + 7 * 86_400_000;
+  const near = rows.filter((e) => (e.startMs ?? 0) < week);
+  const far = rows.filter((e) => (e.startMs ?? 0) >= week);
+  const out: string[] = near.map((e) =>
+    JSON.stringify({
+      account: e.account,
+      calendarId: e.calendarId,
+      id: e.googleId,
+      title: e.summary,
+      start: e.start,
+      end: e.end,
+      allDay: !!e.allDay,
+    }),
+  );
+  if (far.length) {
+    out.push("## 8〜30日先（簡易表示。変更対象にする場合は id が要るので日付を指定して聞き直させる）");
+    for (const e of far.slice(0, 60)) {
+      out.push(`- ${e.allDay ? e.start : `${e.start?.slice(0, 16)}〜${e.end?.slice(11, 16)}`} ${e.summary ?? "(無題)"}`);
+    }
+    if (far.length > 60) out.push(`…ほか${far.length - 60}件`);
+  }
+  return out.join("\n");
 }
 
 /**
- * Free windows over the next 7 days (waking hours minus timed events), so slot
+ * Free windows over the next 14 days (waking hours minus timed events), so slot
  * proposals land in genuinely open time. All-day events don't block a day.
  */
 function freeSlots(): string {
@@ -283,14 +297,14 @@ function freeSlots(): string {
       and(
         isNull(events.deletedAt),
         gt(events.endMs, Date.now()),
-        lt(events.startMs, Date.now() + 7 * 86_400_000),
+        lt(events.startMs, Date.now() + 14 * 86_400_000),
       ),
     )
     .all()
     .filter((e) => !e.allDay && e.startMs != null && e.endMs != null);
 
   const lines: string[] = [];
-  for (let i = 0; i < 7; i++) {
+  for (let i = 0; i < 14; i++) {
     const day = new Date();
     day.setHours(0, 0, 0, 0);
     day.setDate(day.getDate() + i);
@@ -440,8 +454,8 @@ function buildPrompt(taskRow: TaskRow | null, history: ChatMessage[], message: s
     out.push("");
   }
   out.push("# 未完了タスク", openTasks(), "");
-  out.push("# 今後7日間の予定（ローカルミラー）", upcomingEvents(), "");
-  out.push("# 空き時間（07:00〜23:00、予定を除いた枠。作業枠の提案はここから）", freeSlots(), "");
+  out.push("# 今後の予定（ローカルミラー。直近7日は詳細、8〜30日先は簡易。31日以降はここに無いだけで存在しうる —", "  「予定が無い」ではなく「この画面では分からない」と答えること）", upcomingEvents(), "");
+  out.push("# 空き時間（今後14日、07:00〜23:00、予定を除いた枠。作業枠の提案はここから）", freeSlots(), "");
   out.push("# 見積りと実績（このユーザーの較正データ）", estimationHistory(), "");
   out.push("# ユーザーのライフログ要約", summarizeLogs(), "");
   out.push("# 最近のノート（講義の文字起こし等。ユーザーが内容に触れたら参照）", recentNotes(), "");
