@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { CLAUDE_DIRS } from "./claude-pool";
 
 /**
  * Best-effort "remaining quota" per CLI agent, read from each tool's own
@@ -39,10 +40,10 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 }
 
 /* ------------------------------------------------------------------ claude */
-async function claudeQuota(): Promise<AgentQuota> {
-  const agent = "claude";
+async function claudeQuota(dir = path.join(HOME, ".claude"), label = "claude"): Promise<AgentQuota> {
+  const agent = label;
   try {
-    const raw = await fs.readFile(path.join(HOME, ".claude", ".credentials.json"), "utf8");
+    const raw = await fs.readFile(path.join(dir, ".credentials.json"), "utf8");
     const cred = JSON.parse(raw).claudeAiOauth ?? {};
     if (!cred.accessToken) throw new Error("no token");
     const res = await withTimeout(
@@ -185,8 +186,15 @@ let cache: { at: number; data: AgentQuota[] } | null = null;
 /** All agents' remaining quota, cached for 60s (the sources are cheap but not free). */
 export async function agentQuotas(): Promise<AgentQuota[]> {
   if (cache && Date.now() - cache.at < 60_000) return cache.data;
+  // claude: プールの全アカウント分 (未ログインのdirはスキップ)
+  const marks = ["", "②", "③", "④"];
+  const claudeDirs: string[] = [];
+  for (const d of CLAUDE_DIRS) {
+    try { await fs.access(path.join(d, ".credentials.json")); claudeDirs.push(d); } catch { /* not logged in */ }
+  }
+  if (!claudeDirs.length) claudeDirs.push(path.join(HOME, ".claude"));
   const data = await Promise.all([
-    claudeQuota(),
+    ...claudeDirs.map((d, i) => claudeQuota(d, `claude${marks[i] ?? `#${i + 1}`}`)),
     codexQuota(),
     copilotQuota(),
     Promise.resolve<AgentQuota>({

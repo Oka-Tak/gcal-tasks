@@ -7,6 +7,7 @@ import { db } from "./db";
 import { agentJobs } from "./db/schema";
 import { env } from "./env";
 import { type AgentName, type AgentUsage } from "./agents-catalog";
+import { pickClaudeDir } from "./claude-pool";
 
 /**
  * Thin wrapper around the LOCAL CLI agents (claude / codex / copilot / agy).
@@ -53,14 +54,14 @@ interface Captured {
 function spawnCapture(
   bin: string,
   args: string[],
-  opts: { cwd?: string; timeoutMs: number; input?: string },
+  opts: { cwd?: string; timeoutMs: number; input?: string; env?: Record<string, string> },
 ): Promise<Captured> {
   return new Promise((resolve) => {
     let child;
     try {
       child = spawn(bin, args, {
         cwd: opts.cwd,
-        env: process.env,
+        env: { ...process.env, ...(opts.env ?? {}) },
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (e) {
@@ -141,13 +142,13 @@ function toolLine(name: string, input: Record<string, unknown> | undefined): str
 function spawnClaudeStream(
   bin: string,
   args: string[],
-  opts: { cwd?: string; timeoutMs: number; input?: string },
+  opts: { cwd?: string; timeoutMs: number; input?: string; env?: Record<string, string> },
   onEvent: (line: string) => void,
 ): Promise<Captured> {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(bin, args, { cwd: opts.cwd, env: process.env, stdio: ["pipe", "pipe", "pipe"] });
+      child = spawn(bin, args, { cwd: opts.cwd, env: { ...process.env, ...(opts.env ?? {}) }, stdio: ["pipe", "pipe", "pipe"] });
     } catch (e) {
       resolve({ code: -1, stdout: "", stderr: String(e), timedOut: false });
       return;
@@ -211,13 +212,13 @@ function spawnClaudeStream(
 function spawnCodexStream(
   bin: string,
   args: string[],
-  opts: { cwd?: string; timeoutMs: number; input?: string },
+  opts: { cwd?: string; timeoutMs: number; input?: string; env?: Record<string, string> },
   onEvent: (line: string) => void,
 ): Promise<Captured & { eventUsage?: Partial<AgentUsage> }> {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(bin, args, { cwd: opts.cwd, env: process.env, stdio: ["pipe", "pipe", "pipe"] });
+      child = spawn(bin, args, { cwd: opts.cwd, env: { ...process.env, ...(opts.env ?? {}) }, stdio: ["pipe", "pipe", "pipe"] });
     } catch (e) {
       resolve({ code: -1, stdout: "", stderr: String(e), timedOut: false });
       return;
@@ -299,7 +300,14 @@ async function runClaude(prompt: string, o: RunOptions, timeoutMs: number): Prom
   // cwd is the data dir (so uploaded images are inside the workspace and readable);
   // --add-dir (absolute) makes that explicit for the Read tool.
   args.push("--add-dir", dataAbs);
-  const spawnOpts = { cwd: dataAbs, timeoutMs, input: prompt };
+  // 複数アカウント: 5時間枠の残りが多い方の CLAUDE_CONFIG_DIR で実行
+  const cfgDir = await pickClaudeDir();
+  const spawnOpts = {
+    cwd: dataAbs,
+    timeoutMs,
+    input: prompt,
+    ...(cfgDir ? { env: { CLAUDE_CONFIG_DIR: cfgDir } } : {}),
+  };
   return stream
     ? spawnClaudeStream(env.claudeBin, args, spawnOpts, o.onEvent as (line: string) => void)
     : spawnCapture(env.claudeBin, args, spawnOpts);
