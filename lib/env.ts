@@ -29,6 +29,9 @@ export const env = {
   ntfyUrl: (process.env.KAIROS_NTFY_URL ?? "").replace(/\/$/, ""), // e.g. https://ntfy.sh or self-hosted
   ntfyTopic: process.env.KAIROS_NTFY_TOPIC ?? "", // treat as a secret (anyone who knows it can read/send)
   ntfyToken: process.env.KAIROS_NTFY_TOKEN ?? "", // access token for a protected self-hosted server
+  // Home-screen widgets (Scriptable/KWGT) can't do the OAuth cookie dance —
+  // they authenticate with this bearer-ish token instead. Secret (like ntfyTopic).
+  widgetToken: process.env.KAIROS_WIDGET_TOKEN ?? "",
   // Local CLI agents (must be on PATH or given as absolute paths).
   claudeBin: process.env.KAIROS_CLAUDE_BIN ?? "claude",
   codexBin: process.env.KAIROS_CODEX_BIN ?? "codex",
