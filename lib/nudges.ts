@@ -3,6 +3,7 @@ import { db } from "./db";
 import { tasks } from "./db/schema";
 import { env } from "./env";
 import { pushEnabled, sendPush } from "./notify";
+import { checkMorningBriefing } from "./briefing";
 
 /**
  * Hourly proactive nudges (ntfy), on top of the explicit remindAt reminders:
@@ -179,10 +180,13 @@ export function startNudgeLoop(): void {
   timer.unref?.();
   g.__kairosNudgeLoop = timer;
 
-  const deadlineTick = () =>
+  const deadlineTick = () => {
     checkDeadlines()
       .then((n) => { if (n) console.log(`[kairos] deadline pushes sent: ${n}`); })
       .catch((e) => console.error("[kairos] deadline tick failed:", e));
+    // 朝ブリーフィング (1日1回、07時台の最初のtickで送信)
+    checkMorningBriefing().catch((e) => console.error("[kairos] briefing failed:", e));
+  };
   const dTimer = setInterval(deadlineTick, DEADLINE_TICK_MS);
   dTimer.unref?.();
   console.log("[kairos] nudge loop started (60min tick) + deadline loop (60s tick)");
