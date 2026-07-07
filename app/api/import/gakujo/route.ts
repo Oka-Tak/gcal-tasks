@@ -1,6 +1,6 @@
 import { type NextRequest } from "next/server";
 import { env } from "@/lib/env";
-import { importGakujoAssignments } from "@/lib/gakujo-import";
+import { importGakujoAssignments, importGakujoStructured } from "@/lib/gakujo-import";
 
 export const runtime = "nodejs";
 
@@ -30,7 +30,7 @@ export function OPTIONS(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const headers = { ...cors(req.headers.get("origin")), "Content-Type": "application/json" };
-  let body: { token?: string; text?: string };
+  let body: { token?: string; text?: string; assignments?: unknown[] };
   try {
     body = await req.json();
   } catch {
@@ -39,6 +39,9 @@ export async function POST(req: NextRequest) {
   if (!env.widgetToken || body.token !== env.widgetToken)
     return new Response(JSON.stringify({ detail: "unauthorized" }), { status: 401, headers });
 
-  const result = await importGakujoAssignments(String(body.text ?? ""));
+  // 構造化データ（ユーザースクリプトの決定論パース）優先。無ければテキストをAI抽出。
+  const result = Array.isArray(body.assignments)
+    ? await importGakujoStructured(body.assignments as never)
+    : await importGakujoAssignments(String(body.text ?? ""));
   return new Response(JSON.stringify(result), { status: result.ok ? 200 : 422, headers });
 }

@@ -63,6 +63,12 @@ export interface ImportResult {
   error?: string;
 }
 
+/** 構造化済みの課題リスト（ユーザースクリプトの決定論パース）から直接タスク化。 */
+export async function importGakujoStructured(list: Assignment[]): Promise<ImportResult> {
+  return createFromList(Array.isArray(list) ? list : []);
+}
+
+/** 課題一覧ページのテキストから AI 抽出してタスク化（ブックマークレットの汎用経路）。 */
 export async function importGakujoAssignments(text: string): Promise<ImportResult> {
   const empty: ImportResult = { ok: true, created: 0, skipped: 0, pastOrDone: 0, noDue: 0, items: [] };
   if (!text || text.length < 20) return { ...empty, ok: false, error: "本文が空です" };
@@ -71,7 +77,11 @@ export async function importGakujoAssignments(text: string): Promise<ImportResul
   if (!res.ok) return { ...empty, ok: false, error: `抽出失敗: ${res.error}` };
   const list = extractJson<Assignment[]>(res.text);
   if (!Array.isArray(list)) return { ...empty, ok: false, error: "抽出結果をJSONとして解釈できませんでした" };
+  return createFromList(list);
+}
 
+async function createFromList(list: Assignment[]): Promise<ImportResult> {
+  const empty: ImportResult = { ok: true, created: 0, skipped: 0, pastOrDone: 0, noDue: 0, items: [] };
   const target = targetList();
   if (!target) return { ...empty, ok: false, error: "書き込み先タスクリストがありません（Googleアカウント連携を確認）" };
 
