@@ -171,11 +171,34 @@ export const notes = sqliteTable(
     error: text("error"),
     audioPath: text("audio_path"), // local upload (inside data dir)
     jobId: text("job_id"), // agent_jobs row of the summarize step
+    notebook: text("notebook"), // Open WebUI collection name (RAGの棚)
+    owuiFileId: text("owui_file_id"), // OWUI file id — 編集時の置き換えに必要
     createdAt: integer("created_at"),
     updatedAt: integer("updated_at"),
     deletedAt: integer("deleted_at"),
   },
   (t) => [index("notes_event").on(t.eventKey)],
+);
+
+/**
+ * NotebookLM的な「ソース資料」: ノートブック（=OWUIコレクション）に任意の
+ * ファイル（pdf/pptx/docx等）を追加して RAG から引けるようにする。
+ * 実体は data/materials/ に保存し、OWUI へは pushLocalFileToOwui で登録。
+ */
+export const materials = sqliteTable(
+  "materials",
+  {
+    id: text("id").primaryKey(), // uuid
+    notebook: text("notebook").notNull(), // OWUI collection name
+    eventKey: text("event_key"), // 紐づけ元の予定（あれば）
+    filename: text("filename").notNull(),
+    path: text("path").notNull(), // local absolute path
+    size: integer("size"),
+    owuiFileId: text("owui_file_id"),
+    createdAt: integer("created_at"),
+    deletedAt: integer("deleted_at"),
+  },
+  (t) => [index("materials_notebook").on(t.notebook)],
 );
 
 /**

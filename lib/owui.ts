@@ -153,17 +153,34 @@ export async function removeOwuiFile(collection: string, fileId: string): Promis
  * Upload one note as a markdown file and attach it to a collection.
  * `collection` is the notebook: per-course for event-attached notes
  * (講義: 経営管理), the catch-all otherwise.
+ * `replaceFileId` = 既存登録の置き換え（編集の再同期）。
+ * Returns the new OWUI file id (null on failure — the note stays local-only).
  */
 export async function pushNoteToOwui(note: {
   id: string;
   title: string | null;
   content: string | null;
   transcript: string | null;
-}, collection?: string | null): Promise<void> {
+}, collection?: string | null, replaceFileId?: string | null): Promise<string | null> {
   const name = (collection ?? "").trim() || DEFAULT_COLLECTION;
   try {
     const token = await getToken();
     const kid = await getCollectionId(token, name);
+    if (replaceFileId) {
+      await removeOwuiFile(name, replaceFileId).catch(() => {});
+    } else {
+      // owuiFileId を記録する前の時代に登録したコピーが残っていると編集の
+      // たびに増殖する — 同名ファイルをコレクションから探して掃除する
+      try {
+        const kr = await owuiFetch(`/api/v1/knowledge/${kid}`, {}, token);
+        if (kr.ok) {
+          const kd = (await kr.json()) as { files?: { id: string; meta?: { name?: string } }[] };
+          for (const f of kd.files ?? []) {
+            if (f.meta?.name === `kairos-note-${note.id}.md`) await removeOwuiFile(name, f.id).catch(() => {});
+          }
+        }
+      } catch { /* 掃除失敗は増殖許容 */ }
+    }
 
     const md = [
       `# ${note.title ?? "(無題)"}`,
@@ -181,6 +198,7 @@ export async function pushNoteToOwui(note: {
     const up = await owuiFetch("/api/v1/files/", { method: "POST", body: fd }, token);
     if (!up.ok) throw new Error(`owui file upload: HTTP ${up.status} ${(await up.text()).slice(0, 200)}`);
     const file = (await up.json()) as { id: string };
+    await waitForFileReady(token, file.id); // 抽出完了前のaddは "content empty" で弾かれる
 
     const add = await owuiFetch(`/api/v1/knowledge/${kid}/file/add`, {
       method: "POST",
@@ -189,7 +207,9 @@ export async function pushNoteToOwui(note: {
     }, token);
     if (!add.ok) throw new Error(`owui knowledge add: HTTP ${add.status} ${(await add.text()).slice(0, 200)}`);
     console.log(`[owui] note ${note.id} indexed into "${name}"`);
+    return file.id;
   } catch (e) {
     console.error("[owui] push failed (note kept locally):", e);
+    return null;
   }
 }

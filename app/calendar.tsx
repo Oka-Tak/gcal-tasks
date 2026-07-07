@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { signIn, signOut } from "next-auth/react";
 import { ChatPane } from "./chat-pane";
@@ -785,6 +785,26 @@ function EventNotes({ ev }: { ev: Ev }) {
   const eventKey = `${ev.account}|${ev.calendarId}|${ev.id}`;
   const eventLabel = `${ev.summary} ${ev.allDay ? fmtAllDay(ev) : fmtTimed(ev)}`;
   const [items, setItems] = useState<{ id: string; title: string; status: string; hasAudio: boolean }[]>([]);
+  const matRef = useRef<HTMLInputElement>(null);
+  const [matMsg, setMatMsg] = useState<string | null>(null);
+
+  // 資料追加: この予定の棚（講義: <予定名>）へRAG登録
+  const uploadMaterials = useCallback(async (files: FileList) => {
+    setMatMsg("登録中…");
+    try {
+      const fd = new FormData();
+      for (const f of Array.from(files)) fd.append("files", f);
+      fd.append("eventKey", eventKey);
+      const r = await fetch("/api/materials", { method: "POST", body: fd });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail ?? `HTTP ${r.status}`);
+      setMatMsg(d.errors?.length ? `⚠ ${d.errors[0]}` : `✓ ${d.created.length}件を資料に追加`);
+    } catch (e) {
+      setMatMsg(`⚠ ${String(e).slice(0, 120)}`);
+    } finally {
+      if (matRef.current) matRef.current.value = "";
+    }
+  }, [eventKey]);
 
   const reload = useCallback(async () => {
     const r = await api("GET", `/api/notes?eventKey=${enc(eventKey)}`);
@@ -817,6 +837,15 @@ function EventNotes({ ev }: { ev: Ev }) {
         </div>
       ))}
       <AudioUpload compact eventKey={eventKey} eventLabel={eventLabel} onStarted={() => void reload()} />
+      <div style={{ marginTop: 4 }}>
+        <button className="btn" onClick={() => matRef.current?.click()}>📚 資料を追加</button>
+        <input
+          ref={matRef} type="file" hidden multiple
+          accept=".pdf,.docx,.pptx,.xlsx,.csv,.txt,.md,.html"
+          onChange={(e) => { if (e.target.files?.length) void uploadMaterials(e.target.files); }}
+        />
+        {matMsg && <span className="lmeta" style={{ marginLeft: 8 }}>{matMsg}</span>}
+      </div>
     </span></div>
   );
 }

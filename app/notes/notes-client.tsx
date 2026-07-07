@@ -114,6 +114,7 @@ function NoteModal({ id, onClose, onChanged }: {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [title, setTitle] = useState("");
+  const [titleEdit, setTitleEdit] = useState(false); // タイトルだけのインライン編集
   const [showTranscript, setShowTranscript] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -147,6 +148,18 @@ function NoteModal({ id, onClose, onChanged }: {
     }
   };
 
+  // タイトルだけの保存（文字起こし中でも可能）
+  const saveTitle = async () => {
+    try {
+      await api("PATCH", "/api/notes", { id, title: title.trim() || "(無題)" });
+      setTitleEdit(false);
+      await load();
+      onChanged();
+    } catch (e) {
+      setErr(String(e));
+    }
+  };
+
   const del = async () => {
     if (!confirm("このノートを削除しますか？")) return;
     await api("DELETE", `/api/notes?id=${encodeURIComponent(id)}`);
@@ -158,11 +171,24 @@ function NoteModal({ id, onClose, onChanged }: {
     <div className="scrim" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal wide">
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-          {editing ? (
-            <input style={{ flex: 1 }} value={title} onChange={(e) => setTitle(e.target.value)} />
+          {editing || titleEdit ? (
+            <input
+              style={{ flex: 1 }} value={title} autoFocus
+              onChange={(e) => setTitle(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && titleEdit) void saveTitle();
+                if (e.key === "Escape" && titleEdit) setTitleEdit(false);
+              }}
+            />
           ) : (
             <h3 style={{ margin: 0, flex: 1 }}>{note?.title ?? "…"}</h3>
           )}
+          {!editing && (titleEdit ? (
+            <button className="btn btn-primary" onClick={() => void saveTitle()}>保存</button>
+          ) : (
+            <button className="btn" title="タイトルを編集"
+              onClick={() => { setTitle(note?.title ?? ""); setTitleEdit(true); }}>✏️</button>
+          ))}
           <button className="btn" onClick={onClose}>閉じる</button>
         </div>
         {err && <p className="errline">{err}</p>}
@@ -211,6 +237,120 @@ function NoteModal({ id, onClose, onChanged }: {
   );
 }
 
+/* ----------------------------------------------------------- materials card */
+type Material = { id: string; notebook: string; filename: string; size: number | null; inRag: boolean; createdAt: number | null };
+
+function fmtSize(n: number | null): string {
+  if (n == null) return "";
+  return n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}MB` : `${Math.round(n / 1000)}KB`;
+}
+
+/** NotebookLM的なソース資料: ノートブック（RAGの棚）にファイルを追加・削除。 */
+function MaterialsCard() {
+  const [items, setItems] = useState<Material[]>([]);
+  const [notebooks, setNotebooks] = useState<string[]>([]);
+  const [notebook, setNotebook] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [openList, setOpenList] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const reload = useCallback(async () => {
+    const r = await api("GET", "/api/materials");
+    setItems(r.materials || []);
+    setNotebooks(r.notebooks || []);
+  }, []);
+  useEffect(() => {
+    // fetch-then-set — false positive for this rule.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void reload().catch((e) => setErr(String(e)));
+  }, [reload]);
+
+  const upload = useCallback(async (files: FileList) => {
+    setUploading(true);
+    setErr(null);
+    try {
+      const fd = new FormData();
+      for (const f of Array.from(files)) fd.append("files", f);
+      if (notebook.trim()) fd.append("notebook", notebook.trim());
+      const r = await fetch("/api/materials", { method: "POST", body: fd });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail ?? `HTTP ${r.status}`);
+      if (d.errors?.length) setErr(d.errors.join(" / "));
+      setOpenList(true);
+      await reload();
+    } catch (e) {
+      setErr(String(e).slice(0, 300));
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }, [notebook, reload]);
+
+  const del = useCallback(async (m: Material) => {
+    if (!confirm(`資料「${m.filename}」を削除しますか？（RAGからも外れます）`)) return;
+    await api("DELETE", `/api/materials?id=${encodeURIComponent(m.id)}`);
+    await reload();
+  }, [reload]);
+
+  // ノートブックごとにグループ
+  const groups = new Map<string, Material[]>();
+  for (const m of items) {
+    const g = groups.get(m.notebook) ?? [];
+    g.push(m);
+    groups.set(m.notebook, g);
+  }
+
+  return (
+    <div className="card" style={{ marginTop: 12 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <strong>📚 資料（RAGのソース）</strong>
+        <input
+          list="notebook-list" placeholder="ノートブック（空=Kairos ノート）"
+          value={notebook} onChange={(e) => setNotebook(e.target.value)}
+          style={{ flex: 1, minWidth: 180 }}
+        />
+        <datalist id="notebook-list">
+          {notebooks.map((n) => <option key={n} value={n} />)}
+        </datalist>
+        <button className="btn btn-primary" onClick={() => fileRef.current?.click()} disabled={uploading}>
+          {uploading ? "登録中…" : "＋ ファイル追加"}
+        </button>
+        <input
+          ref={fileRef} type="file" hidden multiple
+          accept=".pdf,.docx,.pptx,.xlsx,.csv,.txt,.md,.html"
+          onChange={(e) => { if (e.target.files?.length) void upload(e.target.files); }}
+        />
+      </div>
+      <p className="hint" style={{ margin: "6px 0 0" }}>
+        pdf / pptx / docx / xlsx などを棚（ノートブック）に追加すると、チャットのAIが自動で参照します。
+      </p>
+      {err && <p className="errline">{err}</p>}
+      {items.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <button className="link" onClick={() => setOpenList((v) => !v)}>
+            {openList ? "▾" : "▸"} 登録済み {items.length}件
+          </button>
+          {openList && [...groups.entries()].map(([nb, ms]) => (
+            <div key={nb} style={{ marginTop: 6 }}>
+              <div className="lmeta" style={{ fontWeight: 600 }}>{nb}</div>
+              {ms.map((m) => (
+                <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0" }}>
+                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    🗂 {m.filename}
+                  </span>
+                  <span className="lmeta">{fmtSize(m.size)}{m.inRag ? "" : " ・⚠RAG未登録"}</span>
+                  <button className="btn" onClick={() => void del(m)}>✕</button>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ===================================================================== page */
 export default function NotesClient() {
   const [items, setItems] = useState<NoteView[]>([]);
@@ -255,6 +395,7 @@ export default function NotesClient() {
       <div className="page">
         {err && <p className="errline">{err}</p>}
         <AudioUpload onStarted={() => void reload()} />
+        <MaterialsCard />
         <h2 className="sect">ノート一覧</h2>
         {items.length === 0 && <p className="hint">まだノートがありません。音声を投げるか、予定の詳細から作れます。</p>}
         <div className="loglist">

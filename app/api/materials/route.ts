@@ -1,0 +1,51 @@
+import { type NextRequest } from "next/server";
+import { auth } from "@/auth";
+import { addMaterial, deleteMaterial, listMaterials, listNotebooks } from "@/lib/materials";
+
+export const runtime = "nodejs";
+
+async function requireUser() {
+  const session = await auth();
+  return session?.user ? session : null;
+}
+
+/** GET /api/materials[?notebook=…] → 一覧 + ノートブック候補 */
+export async function GET(req: NextRequest) {
+  if (!(await requireUser())) return Response.json({ detail: "unauthenticated" }, { status: 401 });
+  const notebook = new URL(req.url).searchParams.get("notebook");
+  return Response.json({ materials: listMaterials(notebook), notebooks: listNotebooks() });
+}
+
+/** POST multipart: files[] + (notebook | eventKey) → 追加してRAG登録 */
+export async function POST(req: NextRequest) {
+  if (!(await requireUser())) return Response.json({ detail: "unauthenticated" }, { status: 401 });
+  const form = await req.formData();
+  const files = form.getAll("files").filter((f): f is File => f instanceof File);
+  if (!files.length) return Response.json({ detail: "files required" }, { status: 400 });
+  if (files.length > 8) return Response.json({ detail: "一度に8件までです" }, { status: 400 });
+  const notebook = (form.get("notebook") as string | null)?.trim() || null;
+  const eventKey = (form.get("eventKey") as string | null)?.trim() || null;
+  const created = [];
+  const errors: string[] = [];
+  for (const f of files) {
+    try {
+      created.push(await addMaterial({
+        buf: Buffer.from(await f.arrayBuffer()),
+        filename: f.name || "file",
+        notebook,
+        eventKey,
+      }));
+    } catch (e) {
+      errors.push(`${f.name}: ${String(e instanceof Error ? e.message : e).slice(0, 120)}`);
+    }
+  }
+  return Response.json({ ok: errors.length === 0, created, errors });
+}
+
+export async function DELETE(req: NextRequest) {
+  if (!(await requireUser())) return Response.json({ detail: "unauthenticated" }, { status: 401 });
+  const id = new URL(req.url).searchParams.get("id");
+  if (!id) return Response.json({ detail: "id required" }, { status: 400 });
+  await deleteMaterial(id);
+  return new Response(null, { status: 204 });
+}

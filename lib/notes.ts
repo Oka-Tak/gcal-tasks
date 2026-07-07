@@ -63,11 +63,24 @@ export function getNote(id: string): NoteView | null {
   return r && !r.deletedAt ? view(r) : null;
 }
 
+/**
+ * Edit title/content — and re-push the OWUI copy so RAG doesn't keep serving
+ * the pre-edit text (the old file is replaced via owuiFileId).
+ */
 export function updateNote(id: string, patch: { title?: string; content?: string }) {
   db.update(notes)
     .set({ ...patch, updatedAt: Date.now() })
     .where(eq(notes.id, id))
     .run();
+  const r = db.select().from(notes).where(eq(notes.id, id)).get();
+  if (!r || r.deletedAt || r.status !== "done") return;
+  void pushNoteToOwui(
+    { id: r.id, title: r.title, content: r.content, transcript: r.transcript },
+    r.notebook ?? notebookFor(null, r.eventKey),
+    r.owuiFileId,
+  ).then((fid) => {
+    if (fid) db.update(notes).set({ owuiFileId: fid }).where(eq(notes.id, id)).run();
+  });
 }
 
 export function softDeleteNote(id: string) {
@@ -83,7 +96,7 @@ function setStatus(id: string, status: string, patch: Partial<typeof notes.$infe
  * event's title (recurring lectures share one, so notes pack per course) >
  * the catch-all. Keeps courses from mixing in RAG queries.
  */
-function notebookFor(explicit: string | null | undefined, eventKey: string | null | undefined): string | null {
+export function notebookFor(explicit: string | null | undefined, eventKey: string | null | undefined): string | null {
   if (explicit?.trim()) return explicit.trim();
   if (eventKey) {
     const [account, calendarId, googleId] = eventKey.split("|");
@@ -178,9 +191,11 @@ async function pipeline(noteId: string, audioAbs: string, title: string, eventLa
       return;
     }
     const content = res.text.trim().slice(0, 200_000);
-    setStatus(noteId, "done", { content, jobId: res.jobId });
+    setStatus(noteId, "done", { content, jobId: res.jobId, notebook });
     // NotebookLM layer: make the note queryable from the Open WebUI chat
-    void pushNoteToOwui({ id: noteId, title, content, transcript }, notebook);
+    void pushNoteToOwui({ id: noteId, title, content, transcript }, notebook).then((fid) => {
+      if (fid) db.update(notes).set({ owuiFileId: fid }).where(eq(notes.id, noteId)).run();
+    });
   } catch (e) {
     setStatus(noteId, "error", { error: String(e).slice(0, 500) });
   } finally {
@@ -244,11 +259,15 @@ export function createManualNote(opts: { title: string; content?: string; eventK
       updatedAt: now,
     })
     .run();
+  const nb = notebookFor(opts.notebook, opts.eventKey);
+  if (nb) db.update(notes).set({ notebook: nb }).where(eq(notes.id, id)).run();
   if (opts.content) {
     void pushNoteToOwui(
       { id, title: opts.title, content: opts.content, transcript: null },
-      notebookFor(opts.notebook, opts.eventKey),
-    );
+      nb,
+    ).then((fid) => {
+      if (fid) db.update(notes).set({ owuiFileId: fid }).where(eq(notes.id, id)).run();
+    });
   }
   return id;
 }
