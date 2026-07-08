@@ -36,6 +36,7 @@ export async function POST(req: NextRequest) {
     body = Object.fromEntries(
       ["message", "thread", "taskKey", "agent", "model", "effort"].map((k) => [k, form.get(k)]),
     );
+    body.power = form.get("power") === "1";
     const raw = form.getAll("files").filter((f): f is File => f instanceof File);
     if (raw.length > MAX_FILES)
       return Response.json({ detail: `添付は${MAX_FILES}件までです` }, { status: 400 });
@@ -60,6 +61,7 @@ export async function POST(req: NextRequest) {
     agent: typeof body.agent === "string" ? body.agent : undefined,
     model: typeof body.model === "string" ? body.model : undefined,
     effort: typeof body.effort === "string" ? body.effort : undefined,
+    power: body.power === true,
     files,
   };
 

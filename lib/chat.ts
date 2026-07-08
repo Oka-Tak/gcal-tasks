@@ -497,6 +497,7 @@ export async function sendChat(opts: {
   effort?: string;
   files?: ChatFile[]; // uploaded attachments (claude reads them via Read)
   onEvent?: (line: string) => void; // live narration (claude only)
+  power?: boolean; // このメッセージだけ Bash/gh/Read を許可（ユーザーが明示承認）
 }): Promise<ChatResult> {
   const threadId = resolveThread(opts);
   const taskKey = opts.thread ? null : opts.taskKey || null;
@@ -517,8 +518,13 @@ export async function sendChat(opts: {
     effort,
     jobKind: "chat",
     imagePaths: files.map((f) => f.path),
-    // claude: web + (when attachments exist) read-only file access
-    allowedTools: files.length ? ["WebSearch", "WebFetch", "Read"] : ["WebSearch", "WebFetch"],
+    // claude: 通常はWebのみ。power(ユーザー承認)時は Bash/gh/ローカル読取まで開放。
+    // 添付があれば Read も。プロンプトインジェクション対策で既定は最小権限。
+    allowedTools: opts.power
+      ? ["WebSearch", "WebFetch", "Read", "Bash"]
+      : files.length
+        ? ["WebSearch", "WebFetch", "Read"]
+        : ["WebSearch", "WebFetch"],
     onEvent: opts.onEvent,
   });
   if (!res.ok) return { ok: false, error: res.error, jobId: res.jobId };

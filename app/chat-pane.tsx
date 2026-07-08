@@ -143,6 +143,7 @@ export function ChatPane({ thread, taskKey, autoMessage, emptyHint, onExecuted, 
   const [effort, setEffort] = useState("");
   const [busy, setBusy] = useState(false);
   const [liveLog, setLiveLog] = useState<string[]>([]); // 実行中の動作ログ (SSE)
+  const [power, setPower] = useState(false); // このメッセージだけ claude に Bash/gh/Read を許可
   const [deciding, setDeciding] = useState<string | null>(null);
   const [batch, setBatch] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -236,13 +237,14 @@ export function ChatPane({ thread, taskKey, autoMessage, emptyHint, onExecuted, 
         fd.append("agent", agent);
         fd.append("model", model);
         if (effort) fd.append("effort", effort);
+        if (power) fd.append("power", "1");
         for (const f of attach) fd.append("files", f);
         resp = await fetch("/api/chat?stream=1", { method: "POST", body: fd });
       } else {
         resp = await fetch("/api/chat?stream=1", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ thread, taskKey, message: m, agent, model, effort: effort || undefined }),
+          body: JSON.stringify({ thread, taskKey, message: m, agent, model, effort: effort || undefined, power }),
         });
       }
       if (!resp.ok || !resp.body) throw new Error(await resp.text());
@@ -457,6 +459,16 @@ export function ChatPane({ thread, taskKey, autoMessage, emptyHint, onExecuted, 
               </select>
             ) : null;
           })()}
+          {agent === "claude" && (
+            <button
+              type="button"
+              className={`btn powerbtn${power ? " on" : ""}`}
+              title={power
+                ? "コマンド許可: ON — このメッセージは claude が Bash/gh/ファイル読取まで使えます（承認済み）"
+                : "コマンド許可: OFF — 通常は Web 検索のみ。ON にすると gh・シェル・ローカル読取を許可します"}
+              onClick={() => setPower((v) => !v)}
+            >🔧{power ? " 許可中" : ""}</button>
+          )}
         </div>
         <textarea
           rows={2}

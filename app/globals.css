@@ -345,6 +345,9 @@ textarea.mono,input.mono{font-family:var(--mono);font-size:12px}
 .attachchip button:hover{color:var(--danger)}
 .chatbar .attachbtn{align-self:stretch;padding:7px 10px}
 .chatbar .attachbtn.dim{opacity:.45}
+/* コマンド許可トグル: OFFは控えめ、ONは赤系で「開放中」を強調 */
+.powerbtn{padding:4px 8px;font-size:12px;opacity:.6}
+.powerbtn.on{opacity:1;background:#c0392b;color:#fff;border-color:#c0392b;font-weight:700}
 .chatbar{display:flex;gap:8px;align-items:flex-end;margin-top:10px}
 .chatbar select{border:1px solid var(--line);border-radius:9px;padding:8px 7px;
      font-size:12px;font-family:var(--mono);align-self:stretch;
