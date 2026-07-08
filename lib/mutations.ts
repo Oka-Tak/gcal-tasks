@@ -80,6 +80,34 @@ export async function createTask(b: TaskWrite): Promise<{ id: string }> {
   return { id };
 }
 
+/**
+ * Insert many tasks into ONE (account, tasklist) with a single sync at the end.
+ * createTask() syncs the whole list per task, so bulk imports (gakujo 課題) would
+ * do N full syncs and blow the request timeout — this does N inserts + 1 sync.
+ * Returns how many succeeded.
+ */
+export async function createTasksBulk(list: TaskWrite[]): Promise<number> {
+  if (!list.length) return 0;
+  const { account, tasklist } = list[0];
+  const api = tasksFor(account);
+  const done: { id: string; b: TaskWrite }[] = [];
+  for (const b of list) {
+    try {
+      const created = await api.tasks.insert({
+        tasklist,
+        parent: b.parent ?? undefined,
+        requestBody: taskRequestBody(b),
+      });
+      if (created.data.id) done.push({ id: created.data.id, b });
+    } catch (e) {
+      console.error("[bulk] insert failed:", String(e).slice(0, 160));
+    }
+  }
+  await syncTasks(account, tasklist); // 1回だけ
+  for (const { id, b } of done) applyTaskLocal(account, tasklist, id, b); // local-only列を復元
+  return done.length;
+}
+
 export async function updateTask(b: TaskWrite & { id: string }): Promise<void> {
   // Only call Google when a Google-owned field changed; local-only fields never go out.
   const hasGoogle = TASK_GOOGLE_FIELDS.some((k) => k in b);

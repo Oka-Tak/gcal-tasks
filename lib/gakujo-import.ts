@@ -3,7 +3,7 @@ import { and, eq, isNull, like } from "drizzle-orm";
 import { db } from "./db";
 import { tasklists, tasks } from "./db/schema";
 import { runAgent, extractJson } from "./agent";
-import { createTask } from "./mutations";
+import { createTasksBulk, type TaskWrite } from "./mutations";
 
 /**
  * 学務情報システム(gakujo/lcu-web)の課題一覧を Kairos タスク化する。
@@ -87,6 +87,7 @@ async function createFromList(list: Assignment[]): Promise<ImportResult> {
 
   const today = new Date().toISOString().slice(0, 10);
   const out: ImportResult = { ...empty, items: [] };
+  const toCreate: TaskWrite[] = []; // 実際に作る分を貯めて最後に一括
   for (const a of list.slice(0, 60)) {
     const title = `【課題】${a.course ? `${a.course}: ` : ""}${a.title ?? "(無題)"}`;
     if (a.submitted) { out.pastOrDone++; out.items.push({ title, due: a.due ?? null, status: "past-or-done" }); continue; }
@@ -98,20 +99,22 @@ async function createFromList(list: Assignment[]): Promise<ImportResult> {
       .where(and(isNull(tasks.deletedAt), like(tasks.notes, `%[gakujo:${key}]%`))).get();
     if (dup) { out.skipped++; out.items.push({ title, due: a.due, status: "skipped" }); continue; }
 
+    toCreate.push({
+      account: target.account,
+      tasklist: target.tasklist,
+      title,
+      notes: `学務情報システムの課題（自動取り込み）\n[gakujo:${key}]`,
+      due: a.due,
+      ...(a.dueTime && /^\d{2}:\d{2}$/.test(a.dueTime) ? { dueTime: a.dueTime } : {}),
+    });
+    out.items.push({ title, due: a.due, status: "created" });
+  }
+  // 全件を1回の同期で作る（1件ごとのフル同期でtimeoutしていた）
+  if (toCreate.length) {
     try {
-      await createTask({
-        account: target.account,
-        tasklist: target.tasklist,
-        title,
-        notes: `学務情報システムの課題（自動取り込み）\n[gakujo:${key}]`,
-        due: a.due,
-        ...(a.dueTime && /^\d{2}:\d{2}$/.test(a.dueTime) ? { dueTime: a.dueTime } : {}),
-      });
-      out.created++;
-      out.items.push({ title, due: a.due, status: "created" });
+      out.created = await createTasksBulk(toCreate);
     } catch (e) {
-      out.items.push({ title, due: a.due, status: "skipped" });
-      console.error("[gakujo-import] createTask failed:", String(e).slice(0, 200));
+      return { ...out, ok: false, error: `タスク作成失敗: ${String(e).slice(0, 160)}` };
     }
   }
   return out;
