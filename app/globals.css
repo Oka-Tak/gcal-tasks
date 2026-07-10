@@ -166,6 +166,11 @@ a{color:var(--accent)}
 /* rail / tasks */
 .rail h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;
      color:var(--muted);margin:0;padding:14px 14px 6px;font-family:var(--mono)}
+.railhead{display:flex;align-items:center;padding-right:10px}
+.railhead h2{flex:none}
+.sortbtn{font-size:11px;padding:3px 9px;border:1px solid var(--line);border-radius:999px;
+     background:transparent;color:var(--muted);cursor:pointer}
+.sortbtn.on{background:var(--accent,#f5c518);color:#222;border-color:var(--accent,#f5c518);font-weight:600}
 .tlist{padding:0 10px 6px}
 .tlist .name{font-weight:650;font-size:13px;padding:8px 4px 4px;color:var(--ink);
      display:flex;align-items:center;gap:6px}

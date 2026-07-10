@@ -685,15 +685,28 @@ function TasksRail(props: {
 }) {
   const { lists, tasks, multi, acctColor, onToggle, onOpen, onAdd, onAddDetail } = props;
   const now = startOfDay(new Date());
+  const [byDue, setByDue] = useState(false);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (localStorage.getItem("kairos-task-sort") === "due") setByDue(true);
+  }, []);
+  const toggle = () => setByDue((v) => { localStorage.setItem("kairos-task-sort", v ? "manual" : "due"); return !v; });
   return (
     <div className="rail">
-      <h2>タスク</h2>
+      <div className="railhead">
+        <h2>タスク</h2>
+        <div className="spacer" />
+        <button className={`sortbtn${byDue ? " on" : ""}`} onClick={toggle}
+          title={byDue ? "締切順で表示中（クリックで手動並びに戻す）" : "締切順に並べ替え"}>
+          {byDue ? "⏰ 締切順" : "↕ 並べ替え"}
+        </button>
+      </div>
       {lists.map((l) => (
         <TList
           key={`${l.account}|${l.id}`}
           list={l}
           items={tasks.filter((t) => t.account === l.account && t.tasklist === l.id)}
-          multi={multi} acctColor={acctColor} now={now}
+          multi={multi} acctColor={acctColor} now={now} byDue={byDue}
           onToggle={onToggle} onOpen={onOpen} onAdd={onAdd} onAddDetail={onAddDetail}
         />
       ))}
@@ -703,17 +716,21 @@ function TasksRail(props: {
 
 /** One task list: add row on top, open tasks, completed behind a fold. */
 function TList(props: {
-  list: ListMeta; items: Task[]; multi: boolean; acctColor: (e: string) => string; now: Date;
+  list: ListMeta; items: Task[]; multi: boolean; acctColor: (e: string) => string; now: Date; byDue: boolean;
   onToggle: (t: Task) => void; onOpen: (t: Task) => void; onAdd: (l: ListMeta, title: string) => void;
   onAddDetail: (l: ListMeta, title: string) => void;
 }) {
-  const { list: l, items, multi, acctColor, now, onToggle, onOpen, onAdd, onAddDetail } = props;
+  const { list: l, items, multi, acctColor, now, byDue, onToggle, onOpen, onAdd, onAddDetail } = props;
   const [showDone, setShowDone] = useState(false);
   const byDone = (a: Task, b: Task) => Number(a.status === "completed") - Number(b.status === "completed");
+  // 締切順: 早い順、時刻はタイブレーク、期限なしは末尾
+  const dueKey = (t: Task) => (t.due ? `${t.due.slice(0, 10)}T${t.dueTime ?? "23:59"}` : "9999-99-99");
+  const byDueSort = (a: Task, b: Task) => dueKey(a) < dueKey(b) ? -1 : dueKey(a) > dueKey(b) ? 1 : 0;
+  const sortActive = <T extends Task>(arr: T[]) => (byDue ? arr.slice().sort(byDueSort) : arr);
   const parents = items.filter((t) => !t.parent);
-  const active = parents.filter((t) => t.status !== "completed");
+  const active = sortActive(parents.filter((t) => t.status !== "completed"));
   const done = parents.filter((t) => t.status === "completed");
-  const kidsOf = (id: string) => items.filter((t) => t.parent === id).sort(byDone);
+  const kidsOf = (id: string) => sortActive(items.filter((t) => t.parent === id).sort(byDone));
   const row = (t: Task, sub: boolean) => {
     const isDone = t.status === "completed";
     const dd = taskDueDate(t);
