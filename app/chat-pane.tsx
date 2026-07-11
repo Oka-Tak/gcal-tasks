@@ -28,16 +28,19 @@ const WD = ["日", "月", "火", "水", "木", "金", "土"];
 const pad = (n: number) => String(n).padStart(2, "0");
 const enc = encodeURIComponent;
 
+// ライブカタログ（/api/agents）で上書きされる。モデル世代交代に自動追従。
+let CATALOG: typeof AGENT_CATALOG = AGENT_CATALOG;
+
 /** Last-used model per agent (falling back to the pre-multi-agent key). */
 function storedModel(a: AgentName): string {
-  const models = AGENT_CATALOG[a].models;
+  const models = CATALOG[a].models;
   const saved = localStorage.getItem(`kairos-model-${a}`) ?? localStorage.getItem("kairos-model");
   return models.some((m) => m.id === saved) ? (saved as string) : models[0].id;
 }
 
 /** Last-used effort for an agent+model ("" = the model has no effort knob). */
 function storedEffort(a: AgentName, modelId: string): string {
-  const def = AGENT_CATALOG[a].models.find((m) => m.id === modelId);
+  const def = CATALOG[a].models.find((m) => m.id === modelId);
   if (!def?.efforts) return "";
   const saved = localStorage.getItem(`kairos-effort-${a}-${modelId}`);
   return saved && def.efforts.includes(saved) ? saved : (def.defaultEffort ?? def.efforts[0]);
@@ -154,6 +157,8 @@ export function ChatPane({ thread, taskKey, autoMessage, emptyHint, onExecuted, 
   const firstScroll = useRef(true);
   const autoSent = useRef(false);
 
+  const [catalog, setCatalog] = useState<typeof AGENT_CATALOG>(AGENT_CATALOG);
+
   // remember the last agent/model/effort choice across sessions
   useEffect(() => {
     const saved = localStorage.getItem("kairos-agent");
@@ -164,6 +169,18 @@ export function ChatPane({ thread, taskKey, autoMessage, emptyHint, onExecuted, 
     setAgent(a);
     setModel(m);
     setEffort(storedEffort(a, m));
+    // ライブカタログ（今使えるモデル）に差し替え、選択が消えていたら選び直す
+    void fetch("/api/agents")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((r) => {
+        if (!r?.catalog?.claude?.models?.length) return;
+        CATALOG = r.catalog;
+        setCatalog(r.catalog);
+        const m2 = storedModel(a);
+        setModel(m2);
+        setEffort(storedEffort(a, m2));
+      })
+      .catch(() => {});
   }, []);
   const pickAgent = (a: AgentName) => {
     const m = storedModel(a);
@@ -446,13 +463,13 @@ export function ChatPane({ thread, taskKey, autoMessage, emptyHint, onExecuted, 
           <select value={agent} onChange={(e) => pickAgent(e.target.value as AgentName)} title="エージェント">
             {AGENT_NAMES.map((a) => <option key={a} value={a}>{a}</option>)}
           </select>
-          {AGENT_CATALOG[agent].models.length > 1 && (
+          {catalog[agent].models.length > 1 && (
             <select value={model} onChange={(e) => pickModel(e.target.value)} title="モデル">
-              {AGENT_CATALOG[agent].models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+              {catalog[agent].models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
             </select>
           )}
           {(() => {
-            const efforts = AGENT_CATALOG[agent].models.find((m) => m.id === model)?.efforts;
+            const efforts = catalog[agent].models.find((m) => m.id === model)?.efforts;
             return efforts ? (
               <select value={effort} onChange={(e) => pickEffort(e.target.value)} title="エフォート（思考の深さ）">
                 {efforts.map((e) => <option key={e} value={e}>{e}</option>)}

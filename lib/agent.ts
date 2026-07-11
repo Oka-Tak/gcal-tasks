@@ -7,7 +7,7 @@ import { db } from "./db";
 import { agentJobs } from "./db/schema";
 import { env } from "./env";
 import { type AgentName, type AgentUsage } from "./agents-catalog";
-import { pickClaudeDir } from "./claude-pool";
+import { claudeAccounts, pickClaudeDir } from "./claude-pool";
 
 /**
  * Thin wrapper around the LOCAL CLI agents (claude / codex / copilot / agy).
@@ -452,6 +452,70 @@ export async function runAgent(prompt: string, opts: RunOptions = {}): Promise<R
     .run();
 
   return { ok, text, error, jobId, usage };
+}
+
+/** フォールバック連鎖の1段: このエージェント・モデルで試す。 */
+export interface AgentStep {
+  agent: AgentName;
+  model?: string;
+  effort?: string;
+}
+
+/** バックグラウンドジョブ用の既定連鎖: claude枠が薄い時は codex → copilot → agy。 */
+export const BG_FALLBACK: AgentStep[] = [
+  { agent: "claude" }, // model は opts.model を引き継ぐ
+  { agent: "codex", model: "gpt-5.4-mini", effort: "medium" },
+  { agent: "copilot", model: "auto" },
+  { agent: "agy", model: "Gemini 3.5 Flash", effort: "Medium" },
+];
+
+/** claude の5時間枠残り%（プール内の最良アカウント）。取得失敗は null。 */
+async function bestClaudeRemaining(): Promise<number | null> {
+  try {
+    const accounts = await claudeAccounts();
+    const vals = accounts.map((a) => a.remaining).filter((v): v is number => v != null);
+    return vals.length > 0 ? Math.max(...vals) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * usage を意識したエージェント実行: claude の残り枠が薄い(既定<15%)時や失敗時に
+ * codex / copilot / agy へ順に切り替える。ノート要約などのバックグラウンド
+ * ジョブ用 — 対話チャットはユーザーのモデル選択を尊重するので使わない。
+ */
+export async function runAgentAuto(
+  prompt: string,
+  opts: RunOptions = {},
+  chain: AgentStep[] = BG_FALLBACK,
+  minClaudePct = Number(process.env.KAIROS_CLAUDE_MIN_PCT ?? 15),
+): Promise<RunResult> {
+  let last: RunResult | null = null;
+  for (const step of chain) {
+    if (step.agent === "claude") {
+      const rem = await bestClaudeRemaining();
+      if (rem != null && rem < minClaudePct) {
+        console.log(`[agent-auto] claude残り${rem}% (<${minClaudePct}%) — ${opts.jobKind ?? "job"} を次のエージェントへ`);
+        continue;
+      }
+    }
+    const res = await runAgent(prompt, {
+      ...opts,
+      agent: step.agent,
+      model: step.agent === "claude" ? opts.model : step.model,
+      effort: step.agent === "claude" ? opts.effort : step.effort,
+      // claude 専用オプションは他エージェントに渡さない
+      ...(step.agent !== "claude" ? { system: undefined, allowedTools: undefined, onEvent: undefined } : {}),
+    });
+    if (res.ok) {
+      if (step.agent !== "claude") console.log(`[agent-auto] ${opts.jobKind ?? "job"} → ${step.agent} で完了`);
+      return res;
+    }
+    last = res;
+    console.log(`[agent-auto] ${step.agent} 失敗 (${(res.error ?? "").slice(0, 120)}) — 次へ`);
+  }
+  return last ?? { ok: false, text: "", error: "全エージェントが失敗/枠切れ", jobId: "" };
 }
 
 /** Pull the first JSON object/array out of an agent's text (it may add prose/fences). */

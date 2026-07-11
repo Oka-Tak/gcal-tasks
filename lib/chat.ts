@@ -4,6 +4,7 @@ import { db } from "./db";
 import { agentJobs, calendars, chats, events, notes, tasklists, tasks } from "./db/schema";
 import { extractJson, runAgent, type AgentName } from "./agent";
 import { normalizeChoice, type AgentUsage } from "./agents-catalog";
+import { liveAgentCatalog } from "./agents-live";
 import { listAccounts } from "./accounts";
 import { listLogs } from "./logs";
 import { ACTION_SPEC, createProposals, listProposals, type ProposalView } from "./actions";
@@ -505,7 +506,10 @@ export async function sendChat(opts: {
 }): Promise<ChatResult> {
   const threadId = resolveThread(opts);
   const taskKey = opts.thread ? null : opts.taskKey || null;
-  const { agent, model, effort } = normalizeChoice(opts.agent, opts.model, opts.effort);
+  const { agent, model, effort } = normalizeChoice(
+    opts.agent, opts.model, opts.effort,
+    await liveAgentCatalog().catch(() => undefined),
+  );
   const files = opts.files ?? [];
   const history = listMessages(threadId); // before saving the new turn
   const taskRow = taskKey ? taskFor(taskKey) : null;

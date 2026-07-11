@@ -5,7 +5,7 @@ import { db } from "./db";
 import { events, logs, tasks } from "./db/schema";
 import { env } from "./env";
 import { pushEnabled, sendPush } from "./notify";
-import { runAgent } from "./agent";
+import { runAgentAuto } from "./agent";
 import { yesterdaySpendLine } from "./money";
 
 /**
@@ -102,7 +102,7 @@ function yesterdayRecap(now: Date): string[] {
 /** haiku low で一言段取り。失敗したら黙って省く（ブリーフィング自体は届ける）。 */
 async function aiOneliner(evLines: string[], taskLines: string[], recap: string[]): Promise<string | null> {
   try {
-    const res = await runAgent(
+    const res = await runAgentAuto(
       [
         "あなたは予定アシスタント。以下を見て、今日の段取りアドバイスを日本語で1〜2文だけ出力。",
         "挨拶・前置き・箇条書きは不要。過剰な励ましも不要。具体的に。",
@@ -110,7 +110,7 @@ async function aiOneliner(evLines: string[], taskLines: string[], recap: string[
         "# 近い締切", ...taskLines,
         "# 昨日", ...recap,
       ].join("\n"),
-      { agent: "claude", model: "haiku", effort: "low", jobKind: "briefing", timeoutMs: 90_000 },
+      { model: "haiku", effort: "low", jobKind: "briefing", timeoutMs: 90_000 },
     );
     const t = res.ok ? res.text.trim() : "";
     return t && t.length < 300 ? t : null;

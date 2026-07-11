@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { and, eq, isNull, like } from "drizzle-orm";
 import { db } from "./db";
 import { tasklists, tasks } from "./db/schema";
-import { runAgent, extractJson } from "./agent";
+import { runAgentAuto, extractJson } from "./agent";
 import { createTasksBulk, type TaskWrite } from "./mutations";
 
 /**
@@ -73,7 +73,7 @@ export async function importGakujoAssignments(text: string): Promise<ImportResul
   const empty: ImportResult = { ok: true, created: 0, skipped: 0, pastOrDone: 0, noDue: 0, items: [] };
   if (!text || text.length < 20) return { ...empty, ok: false, error: "本文が空です" };
 
-  const res = await runAgent(extractPrompt(text), { agent: "claude", model: "haiku", jobKind: "gakujo-import", timeoutMs: 120_000 });
+  const res = await runAgentAuto(extractPrompt(text), { model: "haiku", jobKind: "gakujo-import", timeoutMs: 120_000 });
   if (!res.ok) return { ...empty, ok: false, error: `抽出失敗: ${res.error}` };
   const list = extractJson<Assignment[]>(res.text);
   if (!Array.isArray(list)) return { ...empty, ok: false, error: "抽出結果をJSONとして解釈できませんでした" };

@@ -6,7 +6,7 @@ import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import { db } from "./db";
 import { events, noteAudios, notes } from "./db/schema";
 import { env } from "./env";
-import { runAgent } from "./agent";
+import { runAgent, runAgentAuto } from "./agent";
 import { pushNoteToOwui } from "./owui";
 import { exportNoteFiles, removeExportedFiles } from "./notes-export";
 
@@ -292,8 +292,8 @@ async function pipeline(noteId: string, title: string, eventLabel: string | null
     const transcript = combineTranscripts(rows).slice(0, 200_000);
     setStatus(noteId, "summarizing", { transcript });
 
-    const res = await runAgent(summarizePrompt(transcript, title, eventLabel), {
-      agent: "claude",
+    // claudeの5h枠が薄い時は codex → copilot → agy に自動で逃がす（要約はどれでも可）
+    const res = await runAgentAuto(summarizePrompt(transcript, title, eventLabel), {
       jobKind: "note-summary",
       timeoutMs: 600_000,
     });

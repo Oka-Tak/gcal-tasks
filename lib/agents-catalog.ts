@@ -83,9 +83,14 @@ export interface AgentChoice {
 }
 
 /** Clamp untrusted agent/model/effort to catalog values (unknown → CLI defaults). */
-export function normalizeChoice(agent?: unknown, model?: unknown, effort?: unknown): AgentChoice {
+export function normalizeChoice(
+  agent?: unknown,
+  model?: unknown,
+  effort?: unknown,
+  catalog: Record<AgentName, { models: ModelDef[] }> = AGENT_CATALOG, // ライブ版(lib/agents-live)を渡せる
+): AgentChoice {
   const a: AgentName = isAgentName(agent) ? agent : "claude";
-  const m = AGENT_CATALOG[a].models.find((x) => x.id === model);
+  const m = catalog[a].models.find((x) => x.id === model);
   if (!m) return { agent: a };
   const e =
     m.efforts && m.efforts.includes(effort as string)
