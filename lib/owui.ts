@@ -12,9 +12,13 @@ const DEFAULT_COLLECTION = "Kairos ノート";
 
 const g = globalThis as unknown as { __owuiToken?: string; __owuiKids?: Map<string, string> };
 
-async function owuiFetch(path: string, init: RequestInit = {}, token?: string): Promise<Response> {
+async function owuiFetch(path: string, init: RequestInit = {}, token?: string, timeoutMs = 120_000): Promise<Response> {
+  // OWUIは大きい文書の埋め込み・ベクタ挿入中イベントループごと固まることが
+  // ある。タイムアウト無しだと呼び出し側(owui-sync等)が永久に待って
+  // ハングするので、必ず打ち切る（呼び出し側はtransientとして再試行）。
   return fetch(`${env.owuiUrl}${path}`, {
     ...init,
+    signal: init.signal ?? AbortSignal.timeout(timeoutMs),
     headers: {
       ...(init.headers ?? {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -124,11 +128,12 @@ export async function pushLocalFileToOwui(
   // OWUI extracts file text ASYNChronously; adding to a collection before it
   // finishes gets rejected as "content empty". Wait for the extraction to land.
   await waitForFileReady(token, file.id);
+  // add はOWUI側で埋め込みまで同期実行される最重量の呼び出し — 長めに待つ
   const add = await owuiFetch(`/api/v1/knowledge/${kid}/file/add`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ file_id: file.id }),
-  }, token);
+  }, token, 300_000);
   if (!add.ok) {
     // e.g. image-only slides → "content is empty". Remove the orphaned upload.
     await owuiFetch(`/api/v1/files/${file.id}`, { method: "DELETE" }, token).catch(() => {});

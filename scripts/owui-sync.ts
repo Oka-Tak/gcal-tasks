@@ -175,6 +175,13 @@ async function main() {
       filename = flat.replace(/\.[^.]*$/, "") + ".txt";
     } else {
       buf = await fs.readFile(abs);
+      // 生テキスト系も上限カット: 数MBの文字起こし.txtが数千チャンクに化けて
+      // OWUIの埋め込み+ベクタ挿入を数分〜占有し全体を無応答にした事故対策。
+      // (自前抽出組は extract-text.py 側で20万字上限済み)
+      if ((ext === ".txt" || ext === ".md") && buf.length > 200_000) {
+        buf = buf.subarray(0, 200_000);
+        console.log(`[owui-sync] truncate ${rel} (${st.size}B → 200kB)`);
+      }
     }
 
     if (prev?.fileId) await removeOwuiFile(prev.collection, prev.fileId).catch(() => {});
