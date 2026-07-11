@@ -108,7 +108,10 @@ async function sessionDirOf(courseAbs: string, dateMs: number | null): Promise<s
   if (!dateMs) return courseAbs;
   const d = new Date(dateMs);
   const ymd = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
-  const hit = (await dirNames(courseAbs)).find((n) => n.includes(ymd));
+  // 既存の回別フォルダは授業によって 20260421 / 260421(YYMMDD) / 0421 と揺れる
+  const hit = (await dirNames(courseAbs)).find(
+    (n) => n.includes(ymd) || n.includes(ymd.slice(2)) || /^\D*\d{4}\D*$/.test(n) && n.includes(ymd.slice(4)),
+  );
   if (hit) return path.join(courseAbs, hit);
   const dir = path.join(courseAbs, `${path.basename(courseAbs)}${ymd}`);
   await mkdirForce(dir);
