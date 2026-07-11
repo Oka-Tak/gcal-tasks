@@ -25,6 +25,9 @@ export const env = {
   dbPath: process.env.KAIROS_DB ?? "./kairos.db",
   // Local data dir for uploads (screenshots) etc. Kept out of git and off the web.
   dataDir: process.env.KAIROS_DATA ?? "./data",
+  // ノートの成果物(要約md+全文文字起こし)を書き出す OneDrive ミラー内のフォルダ。
+  // Syncthing 経由で Windows / OneDrive に還流する。空文字 = エクスポート無効。
+  notesExportDir: process.env.KAIROS_NOTES_EXPORT ?? "",
   // ntfy push notifications (optional; unset = notifications off).
   ntfyUrl: (process.env.KAIROS_NTFY_URL ?? "").replace(/\/$/, ""), // e.g. https://ntfy.sh or self-hosted
   ntfyTopic: process.env.KAIROS_NTFY_TOPIC ?? "", // treat as a secret (anyone who knows it can read/send)

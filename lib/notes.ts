@@ -8,6 +8,7 @@ import { events, noteAudios, notes } from "./db/schema";
 import { env } from "./env";
 import { runAgent } from "./agent";
 import { pushNoteToOwui } from "./owui";
+import { exportNoteFiles, removeExportedFiles } from "./notes-export";
 
 /**
  * NotebookLM-ish notes: audio in → whisperX transcript (local CPU) → agent
@@ -98,10 +99,13 @@ export function updateNote(id: string, patch: { title?: string; content?: string
   ).then((fid) => {
     if (fid) db.update(notes).set({ owuiFileId: fid }).where(eq(notes.id, id)).run();
   });
+  void exportNoteFiles({ ...r, notebook: r.notebook ?? notebookFor(null, r.eventKey) })
+    .catch((e) => console.log(`[notes-export] failed: ${e}`));
 }
 
 export function softDeleteNote(id: string) {
   db.update(notes).set({ deletedAt: Date.now() }).where(eq(notes.id, id)).run();
+  void removeExportedFiles(id).catch(() => {});
 }
 
 function setStatus(id: string, status: string, patch: Partial<typeof notes.$inferInsert> = {}) {
@@ -288,6 +292,9 @@ async function pipeline(noteId: string, title: string, eventLabel: string | null
     void pushNoteToOwui({ id: noteId, title, content, transcript }, notebook).then((fid) => {
       if (fid) db.update(notes).set({ owuiFileId: fid }).where(eq(notes.id, noteId)).run();
     });
+    // フォルダ還流: 要約md+全文txt を OneDrive ミラーの授業フォルダへ
+    const done = db.select().from(notes).where(eq(notes.id, noteId)).get();
+    if (done) void exportNoteFiles(done).catch((e) => console.log(`[notes-export] failed: ${e}`));
   } catch (e) {
     setStatus(noteId, "error", { error: String(e).slice(0, 500) });
   } finally {

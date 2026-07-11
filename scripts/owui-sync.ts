@@ -17,6 +17,9 @@ import { owuiSupportedExt, pushLocalFileToOwui, removeOwuiFile } from "../lib/ow
 const ROOT = process.env.KAIROS_SYNC_ROOT ?? path.join(os.homedir(), "onedrive-sync");
 const STATE = path.join(os.homedir(), ".local", "state", "owui-sync.json");
 const MAX_BYTES = 50_000_000;
+// Kairos がノート成果物を書き出すフォルダ。中身は pushNoteToOwui で既に
+// OWUI に居るので、ここで拾うと二重インデックスになる — スキップ。
+const EXPORT_DIR = path.basename(process.env.KAIROS_NOTES_EXPORT ?? "講義ノート");
 
 // Formats Open WebUI can't extract on this box (its loaders route through
 // unstructured/docling, unavailable) — we extract text ourselves via
@@ -96,6 +99,7 @@ async function main() {
     const shareAbs = path.join(ROOT, share);
     for (const e of await fs.readdir(shareAbs, { withFileTypes: true })) {
       if (e.name.startsWith(".st") || e.name.startsWith(".")) continue;
+      if (e.isDirectory() && e.name === EXPORT_DIR) continue; // Kairosノート成果物（OWUIには別経路で登録済み）
       const abs = path.join(shareAbs, e.name);
       if (e.isDirectory()) {
         for await (const f of walk(abs)) {
