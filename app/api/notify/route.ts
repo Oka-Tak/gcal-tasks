@@ -1,5 +1,6 @@
 import { auth } from "@/auth";
 import { pushEnabled, sendPush } from "@/lib/notify";
+import { loadMuteKeywords, saveMuteKeywords } from "@/lib/notify-mute";
 import { env } from "@/lib/env";
 
 export const runtime = "nodejs";
@@ -13,7 +14,18 @@ async function requireUser() {
 export async function GET() {
   if (!(await requireUser()))
     return Response.json({ detail: "unauthenticated" }, { status: 401 });
-  return Response.json({ enabled: pushEnabled() });
+  return Response.json({ enabled: pushEnabled(), mute: loadMuteKeywords() });
+}
+
+/** Save mute keywords (titles containing them are excluded from pushes). */
+export async function PUT(req: Request) {
+  if (!(await requireUser()))
+    return Response.json({ detail: "unauthenticated" }, { status: 401 });
+  const body = (await req.json().catch(() => null)) as { mute?: unknown } | null;
+  if (!body || !Array.isArray(body.mute) || !body.mute.every((k) => typeof k === "string"))
+    return Response.json({ detail: "mute must be string[]" }, { status: 400 });
+  const saved = await saveMuteKeywords(body.mute as string[]);
+  return Response.json({ mute: saved });
 }
 
 /** Send a test push so the phone-side subscription can be verified. */

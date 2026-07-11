@@ -3,6 +3,7 @@ import { db } from "./db";
 import { tasks } from "./db/schema";
 import { env } from "./env";
 import { pushEnabled, sendPush } from "./notify";
+import { muteMatcher } from "./notify-mute";
 import { checkMorningBriefing } from "./briefing";
 
 /**
@@ -43,11 +44,13 @@ export async function checkNudges(): Promise<number> {
     .from(tasks)
     .where(and(isNull(tasks.deletedAt), eq(tasks.status, "needsAction")))
     .all();
+  const muted = muteMatcher();
   let sent = 0;
 
   // 1) due date is tomorrow
   const tomorrow = ymd(new Date(Date.now() + 86_400_000));
   for (const t of open) {
+    if (muted(t.title)) continue;
     const due = t.due?.slice(0, 10);
     if (due !== tomorrow || t.nudgedForDue === t.due) continue;
     const bits = [
@@ -74,6 +77,7 @@ export async function checkNudges(): Promise<number> {
   let splits = 0;
   for (const t of open) {
     if (splits >= SPLIT_MAX_PER_TICK) break;
+    if (muted(t.title)) continue;
     if (t.parent) continue; // subtasks don't nudge
     if ((t.estimatedMin ?? 0) < SPLIT_MIN_ESTIMATE) continue;
     if (t.splitNudgedAt != null) continue;
@@ -112,9 +116,11 @@ export async function checkDeadlines(): Promise<number> {
     .from(tasks)
     .where(and(isNull(tasks.deletedAt), eq(tasks.status, "needsAction")))
     .all();
+  const muted = muteMatcher();
   let sent = 0;
 
   for (const t of open) {
+    if (muted(t.title)) continue;
     const dueYmd = t.due?.slice(0, 10);
     if (!dueYmd) continue;
     const time = t.dueTime || "23:59";

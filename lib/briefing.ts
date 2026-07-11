@@ -5,6 +5,7 @@ import { db } from "./db";
 import { events, logs, tasks } from "./db/schema";
 import { env } from "./env";
 import { pushEnabled, sendPush } from "./notify";
+import { muteMatcher } from "./notify-mute";
 import { runAgentAuto } from "./agent";
 import { yesterdaySpendLine } from "./money";
 
@@ -25,7 +26,7 @@ const hm = (ms: number) => {
 };
 const ymd = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 
-function todayEvents(now: Date): string[] {
+function todayEvents(now: Date, muted: (t: string | null | undefined) => boolean): string[] {
   const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
   const dayEnd = dayStart + 86_400_000;
   const rows = db
@@ -34,13 +35,13 @@ function todayEvents(now: Date): string[] {
     .where(and(lt(events.startMs, dayEnd), gte(events.endMs, dayStart)))
     .orderBy(asc(events.startMs))
     .all()
-    .filter((e) => e.status !== "cancelled");
+    .filter((e) => e.status !== "cancelled" && !muted(e.summary));
   return rows.slice(0, 10).map((e) =>
     e.allDay ? `・終日 ${e.summary ?? "(無題)"}` : `・${hm(e.startMs ?? 0)}-${hm(e.endMs ?? 0)} ${e.summary ?? "(無題)"}`,
   );
 }
 
-function dueTasks(now: Date): string[] {
+function dueTasks(now: Date, muted: (t: string | null | undefined) => boolean): string[] {
   const horizon = ymd(new Date(now.getTime() + 3 * 86_400_000));
   const today = ymd(now);
   const rows = db
@@ -50,7 +51,7 @@ function dueTasks(now: Date): string[] {
     .all()
     .filter((t) => {
       const due = t.due?.slice(0, 10);
-      return !!due && due >= today && due <= horizon;
+      return !!due && due >= today && due <= horizon && !muted(t.title);
     })
     .sort((a, b) => (a.due ?? "").localeCompare(b.due ?? ""));
   return rows.slice(0, 8).map((t) => {
@@ -132,8 +133,9 @@ export async function checkMorningBriefing(force = false): Promise<boolean> {
     await fs.writeFile(STAMP_FILE(), today); // stamp first — a crash must not spam
   }
 
-  const evLines = todayEvents(now);
-  const taskLines = dueTasks(now);
+  const muted = muteMatcher();
+  const evLines = todayEvents(now, muted);
+  const taskLines = dueTasks(now, muted);
   const recap = yesterdayRecap(now);
   const ai = await aiOneliner(evLines, taskLines, recap);
 

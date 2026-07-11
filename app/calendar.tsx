@@ -1016,9 +1016,23 @@ function AccountsModal({ accounts, onClose, onDisconnect, onSignOut }: {
 }) {
   const [notify, setNotify] = useState<{ enabled: boolean } | null>(null);
   const [testMsg, setTestMsg] = useState<string | null>(null);
+  const [mute, setMute] = useState("");
+  const [muteMsg, setMuteMsg] = useState<string | null>(null);
   useEffect(() => {
-    api("GET", "/api/notify").then(setNotify).catch(() => setNotify({ enabled: false }));
+    api("GET", "/api/notify")
+      .then((r) => { setNotify(r); setMute((r.mute ?? []).join(", ")); })
+      .catch(() => setNotify({ enabled: false }));
   }, []);
+  const saveMute = async () => {
+    setMuteMsg("保存中…");
+    try {
+      const r = await api("PUT", "/api/notify", { mute: mute.split(/[,、\n]/).map((s) => s.trim()).filter(Boolean) });
+      setMute((r.mute ?? []).join(", "));
+      setMuteMsg(r.mute.length ? `保存しました（${r.mute.length}語）` : "保存しました（ミュートなし）");
+    } catch (e) {
+      setMuteMsg(`失敗: ${String(e)}`);
+    }
+  };
   const sendTest = async () => {
     setTestMsg("送信中…");
     try {
@@ -1049,6 +1063,22 @@ function AccountsModal({ accounts, onClose, onDisconnect, onSignOut }: {
         <button className="btn" disabled={!notify?.enabled} onClick={() => void sendTest()}>テスト送信</button>
       </div>
       {testMsg && <p className="hint" style={{ margin: "4px 0 0" }}>{testMsg}</p>}
+      <div className="field" style={{ marginTop: 10 }}>
+        <label>通知ミュート（カンマ区切りのキーワード）</label>
+        <input
+          value={mute}
+          onChange={(e) => setMute(e.target.value)}
+          placeholder="例: SecHack, 説明会"
+          onKeyDown={(e) => { if (e.key === "Enter") void saveMute(); }}
+        />
+        <div className="hint" style={{ marginTop: 4 }}>
+          タイトルにこれらの語を含む予定・タスクは朝ブリーフィングや期限ナッジから除外されます（大文字小文字・全角半角は区別しません）。自分で設定したリマインダーはミュートされません。
+        </div>
+        <div style={{ marginTop: 6 }}>
+          <button className="btn" onClick={() => void saveMute()}>ミュートを保存</button>
+          {muteMsg && <span className="hint" style={{ marginLeft: 8 }}>{muteMsg}</span>}
+        </div>
+      </div>
       <div className="modal-foot" style={{ marginTop: 14 }}>
         <a className="btn btn-primary" href="/api/connect/google">+ アカウントを追加</a>
         <button className="btn" onClick={onSignOut}>サインアウト</button>
