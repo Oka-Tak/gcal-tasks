@@ -41,6 +41,7 @@ export interface NoteView {
   error: string | null;
   hasAudio: boolean;
   audios: NoteAudioView[];
+  notebook: string | null;
   createdAt: number | null;
   updatedAt: number | null;
 }
@@ -64,6 +65,7 @@ function view(r: NoteRow, audios?: AudioRow[]): NoteView {
     error: r.error,
     hasAudio: !!r.audioPath || a.length > 0,
     audios: a.map((x) => ({ id: x.id, seq: x.seq, label: x.label, language: x.language, status: x.status, error: x.error })),
+    notebook: r.notebook ?? notebookFor(null, r.eventKey),
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
   };
@@ -99,8 +101,10 @@ export function updateNote(id: string, patch: { title?: string; content?: string
   ).then((fid) => {
     if (fid) db.update(notes).set({ owuiFileId: fid }).where(eq(notes.id, id)).run();
   });
-  void exportNoteFiles({ ...r, notebook: r.notebook ?? notebookFor(null, r.eventKey) })
-    .catch((e) => console.log(`[notes-export] failed: ${e}`));
+  void exportNoteFiles(
+    { ...r, notebook: r.notebook ?? notebookFor(null, r.eventKey) },
+    eventStartMs(r.eventKey),
+  ).catch((e) => console.log(`[notes-export] failed: ${e}`));
 }
 
 export function softDeleteNote(id: string) {
@@ -117,6 +121,18 @@ function setStatus(id: string, status: string, patch: Partial<typeof notes.$infe
  * event's title (recurring lectures share one, so notes pack per course) >
  * the catch-all. Keeps courses from mixing in RAG queries.
  */
+/** 紐付いた予定の開始時刻（講義日）。回別フォルダ（20260702等）の解決に使う。 */
+export function eventStartMs(eventKey: string | null | undefined): number | null {
+  if (!eventKey) return null;
+  const [account, calendarId, googleId] = eventKey.split("|");
+  const ev = db
+    .select({ startMs: events.startMs })
+    .from(events)
+    .where(and(eq(events.account, account), eq(events.calendarId, calendarId), eq(events.googleId, googleId)))
+    .get();
+  return ev?.startMs ?? null;
+}
+
 export function notebookFor(explicit: string | null | undefined, eventKey: string | null | undefined): string | null {
   if (explicit?.trim()) return explicit.trim();
   if (eventKey) {
@@ -292,9 +308,12 @@ async function pipeline(noteId: string, title: string, eventLabel: string | null
     void pushNoteToOwui({ id: noteId, title, content, transcript }, notebook).then((fid) => {
       if (fid) db.update(notes).set({ owuiFileId: fid }).where(eq(notes.id, noteId)).run();
     });
-    // フォルダ還流: 要約md+全文txt を OneDrive ミラーの授業フォルダへ
+    // フォルダ集約: 要約md+全文txt を OneDrive の授業資料フォルダ（回別があればそこ）へ
     const done = db.select().from(notes).where(eq(notes.id, noteId)).get();
-    if (done) void exportNoteFiles(done).catch((e) => console.log(`[notes-export] failed: ${e}`));
+    if (done)
+      void exportNoteFiles(done, eventStartMs(done.eventKey)).catch((e) =>
+        console.log(`[notes-export] failed: ${e}`),
+      );
   } catch (e) {
     setStatus(noteId, "error", { error: String(e).slice(0, 500) });
   } finally {

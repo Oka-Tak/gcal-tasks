@@ -3,6 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import { execFile } from "node:child_process";
 import { owuiSupportedExt, pushLocalFileToOwui, removeOwuiFile } from "../lib/owui";
+import { exportedPathsSync } from "../lib/notes-export";
 
 /**
  * Sync ~/onedrive-sync (Syncthing mirror of the user's OneDrive folders) into
@@ -17,9 +18,12 @@ import { owuiSupportedExt, pushLocalFileToOwui, removeOwuiFile } from "../lib/ow
 const ROOT = process.env.KAIROS_SYNC_ROOT ?? path.join(os.homedir(), "onedrive-sync");
 const STATE = path.join(os.homedir(), ".local", "state", "owui-sync.json");
 const MAX_BYTES = 50_000_000;
-// Kairos がノート成果物を書き出すフォルダ。中身は pushNoteToOwui で既に
-// OWUI に居るので、ここで拾うと二重インデックスになる — スキップ。
-const EXPORT_DIR = path.basename(process.env.KAIROS_NOTES_EXPORT ?? "講義ノート");
+// 授業資料は授業フォルダ単位でコレクションを分ける（NotebookLM的な棚）。
+// ノート成果物（pushNoteToOwuiで登録済み）と同じ「講義: <授業>」に合流する。
+const COURSES_DIR = path.basename(process.env.KAIROS_NOTES_EXPORT ?? "授業資料");
+// Kairos がフォルダへ書き出したノートmd/txt — OWUIには別経路で登録済みなので
+// 拾うと二重インデックスになる。台帳 (data/notes-export.json) のパスをスキップ。
+const EXPORTED = exportedPathsSync();
 
 // Formats Open WebUI can't extract on this box (its loaders route through
 // unstructured/docling, unavailable) — we extract text ourselves via
@@ -99,9 +103,23 @@ async function main() {
     const shareAbs = path.join(ROOT, share);
     for (const e of await fs.readdir(shareAbs, { withFileTypes: true })) {
       if (e.name.startsWith(".st") || e.name.startsWith(".")) continue;
-      if (e.isDirectory() && e.name === EXPORT_DIR) continue; // Kairosノート成果物（OWUIには別経路で登録済み）
       const abs = path.join(shareAbs, e.name);
-      if (e.isDirectory()) {
+      if (e.isDirectory() && e.name === COURSES_DIR) {
+        // 授業資料/<授業>/** → 「講義: <授業>」。直下のファイルは従来の棚へ。
+        // 年度フォルダ(2025等)は過年度アーカイブ — 授業別化せず従来の棚のまま。
+        for (const c of await fs.readdir(abs, { withFileTypes: true })) {
+          if (c.name.startsWith(".")) continue;
+          const cAbs = path.join(abs, c.name);
+          if (c.isDirectory()) {
+            const col = /^20\d\d$/.test(c.name) ? `OneDrive: ${e.name}` : `講義: ${c.name}`;
+            for await (const f of walk(cAbs)) {
+              jobs.push({ abs: f, rel: path.relative(ROOT, f), collection: col });
+            }
+          } else if (c.isFile()) {
+            jobs.push({ abs: cAbs, rel: path.relative(ROOT, cAbs), collection: `OneDrive: ${e.name}` });
+          }
+        }
+      } else if (e.isDirectory()) {
         for await (const f of walk(abs)) {
           jobs.push({ abs: f, rel: path.relative(ROOT, f), collection: `OneDrive: ${e.name}` });
         }
@@ -125,13 +143,16 @@ async function main() {
   let outOfTime = false;
   for (const { abs, rel, collection } of jobs) {
     if (Date.now() > DEADLINE) { outOfTime = true; break; }
+    if (EXPORTED.has(abs)) { skipped++; continue; } // Kairosノート成果物
     seen.add(rel);
     const ext = path.extname(abs).toLowerCase();
     if (!owuiSupportedExt(ext)) { skipped++; continue; }
     const st = await fs.stat(abs);
     if (st.size === 0 || st.size > MAX_BYTES) { skipped++; continue; }
     const prev = state[rel];
-    if (prev && prev.mtimeMs === st.mtimeMs && prev.size === st.size) continue; // unchanged (or known-bad)
+    // unchanged (or known-bad) — ただしコレクション（棚）が変わった場合は
+    // 旧棚から外して新棚へ push し直す（授業別コレクション化の移行もこれで進む）
+    if (prev && prev.mtimeMs === st.mtimeMs && prev.size === st.size && prev.collection === collection) continue;
 
     // flatten the path below the top dir into the filename so citations stay readable
     const flat = rel.split(path.sep).slice(2).join("__") || path.basename(abs);

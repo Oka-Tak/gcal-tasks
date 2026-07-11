@@ -19,7 +19,7 @@ export type NoteAudioView = {
 export type NoteView = {
   id: string; eventKey: string | null; title: string; content: string | null;
   transcript: string | null; status: string; error: string | null;
-  hasAudio: boolean; audios: NoteAudioView[];
+  hasAudio: boolean; audios: NoteAudioView[]; notebook: string | null;
   createdAt: number | null; updatedAt: number | null;
 };
 
@@ -370,6 +370,82 @@ function NoteModal({ id, onClose, onChanged }: {
 /* ----------------------------------------------------------- materials card */
 type Material = { id: string; notebook: string; filename: string; size: number | null; inRag: boolean; createdAt: number | null };
 
+/* ---------------------------------------------------------- course folders */
+type FolderInfo = { folder: string; notebook: string; files: number; notes: number };
+type FolderFile = { name: string; sub: string; size: number; mtimeMs: number };
+
+/**
+ * OneDrive「授業資料」の授業フォルダ一覧 — ここが各授業の棚（資料+ノート+
+ * 文字起こしが同居、OWUIナレッジ「講義: X」と対応）。クリックでノートを絞り込み、
+ * 中身のファイルも見られる。
+ */
+function CourseFoldersCard({ selected, onSelect }: {
+  selected: string | null; onSelect: (notebook: string | null) => void;
+}) {
+  const [items, setItems] = useState<FolderInfo[]>([]);
+  const [openFolder, setOpenFolder] = useState<string | null>(null);
+  const [files, setFiles] = useState<FolderFile[] | null>(null);
+
+  useEffect(() => {
+    void api("GET", "/api/notebooks").then((r) => setItems(r.notebooks || [])).catch(() => {});
+  }, []);
+
+  const toggle = async (f: FolderInfo) => {
+    if (openFolder === f.folder) {
+      setOpenFolder(null);
+      onSelect(null);
+      return;
+    }
+    setOpenFolder(f.folder);
+    setFiles(null);
+    onSelect(f.notebook);
+    try {
+      const r = await api("GET", `/api/notebooks?folder=${encodeURIComponent(f.folder)}`);
+      setFiles(r.files || []);
+    } catch {
+      setFiles([]);
+    }
+  };
+
+  if (items.length === 0) return null;
+  return (
+    <div className="card">
+      <h3>📚 授業フォルダ（OneDrive: 授業資料）</h3>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {items.map((f) => (
+          <button key={f.folder}
+            className={`btn${selected === f.notebook ? " btn-primary" : ""}`}
+            onClick={() => void toggle(f)}
+            title={`資料${f.files}件 / ノート${f.notes}件 — クリックでノート絞り込み+中身表示`}>
+            {f.folder} <span className="hint" style={{ margin: 0 }}>{f.files}📄{f.notes > 0 ? ` ${f.notes}🎙` : ""}</span>
+          </button>
+        ))}
+      </div>
+      {openFolder && (
+        <div style={{ marginTop: 8 }}>
+          {files === null ? <p className="hint">読み込み中…</p> : (
+            <div style={{ maxHeight: 220, overflowY: "auto" }}>
+              {files.length === 0 && <p className="hint">（ファイルなし）</p>}
+              {files.map((x, i) => (
+                <div key={i} style={{ display: "flex", gap: 8, alignItems: "baseline", padding: "1px 0" }}>
+                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {x.sub ? `${x.sub}/` : ""}{x.name}
+                  </span>
+                  <span className="lmeta">{fmtSize(x.size)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <p className="hint" style={{ margin: "6px 0 0" }}>
+            音声ノートの要約・全文文字起こしもこのフォルダに自動保存され、Windows側にも同期されます。
+            チャット(OWUI)では「#」→「講義: {openFolder}」でこの授業だけを参照できます。
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function fmtSize(n: number | null): string {
   if (n == null) return "";
   return n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}MB` : `${Math.round(n / 1000)}KB`;
@@ -486,6 +562,7 @@ export default function NotesClient() {
   const [items, setItems] = useState<NoteView[]>([]);
   const [open, setOpen] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [filter, setFilter] = useState<string | null>(null); // 授業フォルダで絞り込み
 
   const reload = useCallback(async () => {
     try {
@@ -525,11 +602,14 @@ export default function NotesClient() {
       <div className="page">
         {err && <p className="errline">{err}</p>}
         <AudioUpload onStarted={() => void reload()} />
+        <CourseFoldersCard selected={filter} onSelect={setFilter} />
         <MaterialsCard />
-        <h2 className="sect">ノート一覧</h2>
+        <h2 className="sect">
+          ノート一覧{filter && <> — {filter.replace(/^講義:\s*/, "")} <button className="btn" onClick={() => setFilter(null)}>✕</button></>}
+        </h2>
         {items.length === 0 && <p className="hint">まだノートがありません。音声を投げるか、予定の詳細から作れます。</p>}
         <div className="loglist">
-          {items.map((n) => (
+          {items.filter((n) => !filter || n.notebook === filter).map((n) => (
             <button key={n.id} className="logcard notecard" onClick={() => setOpen(n.id)}>
               <div className="lk">{n.hasAudio ? "🎙" : "📝"}</div>
               <div className="lmain">
