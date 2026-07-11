@@ -154,10 +154,19 @@ async function main() {
       console.log(`[owui-sync] pushed ${rel} → "${collection}"`);
       await record(rel, { mtimeMs: st.mtimeMs, size: st.size, fileId, collection });
     } catch (e) {
-      // OWUI push failed (busy/warming up) — TRANSIENT. Do NOT record, so the
-      // next run retries instead of burning it as a permanent skip.
-      transient++;
-      console.log(`[owui-sync] retry-later ${rel}: ${String(e).slice(0, 120)}`);
+      const msg = String(e);
+      if (msg.includes("Duplicate content")) {
+        // 同一内容が既にRAGに居る(初期の混乱期に登録済み等) — 再試行しても
+        // 永遠に400なので恒久スキップ。中身は既存コピー経由で検索に出る。
+        failed++;
+        console.log(`[owui-sync] dup-skip ${rel}`);
+        await record(rel, { mtimeMs: st.mtimeMs, size: st.size, fileId: "", collection });
+      } else {
+        // OWUI push failed (busy/warming up) — TRANSIENT. Do NOT record, so the
+        // next run retries instead of burning it as a permanent skip.
+        transient++;
+        console.log(`[owui-sync] retry-later ${rel}: ${msg.slice(0, 120)}`);
+      }
     }
     // pace OWUI's CPU embedding so it never saturates the box
     await sleep(THROTTLE_MS);
