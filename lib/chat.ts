@@ -7,6 +7,7 @@ import { normalizeChoice, type AgentUsage } from "./agents-catalog";
 import { listAccounts } from "./accounts";
 import { listLogs } from "./logs";
 import { ACTION_SPEC, createProposals, listProposals, type ProposalView } from "./actions";
+import { ragContext } from "./rag";
 
 /**
  * Per-task (or general) AI consultation. The DB is the source of truth: every
@@ -412,7 +413,7 @@ export interface ChatFile {
   name: string; // original filename (display + prompt context)
 }
 
-function buildPrompt(taskRow: TaskRow | null, history: ChatMessage[], message: string, files: ChatFile[] = []): string {
+function buildPrompt(taskRow: TaskRow | null, history: ChatMessage[], message: string, files: ChatFile[] = [], ragBlock = ""): string {
   const out: string[] = [];
   out.push(
     "あなたはユーザー専属のプランニングアシスタントです。日本語で、簡潔かつ実用的に答えてください。",
@@ -423,6 +424,8 @@ function buildPrompt(taskRow: TaskRow | null, history: ChatMessage[], message: s
     "まず actions を空にして「こういう手順で進めます」という計画を reply で示し、確認を取ってから",
     "次のターンでアクションを出すこと。単純な依頼（タスク1件の追加・予定1件の変更など）は確認不要で直接アクションを出してよい。",
     "ファイルの作成・変更はできません。ユーザーが添付したファイルがある場合のみ Read ツールで読めます（画像・PDF可）。",
+    "所要時間を見積もるときは、後述の【参考資料】（課題・授業スライド等をOneDrive/ノートから自動検索した抜粋）があれば、",
+    "その中身の分量・難度を根拠にする（「資料が無い」ではなく抜粋の範囲で判断し、足りなければその旨添える）。",
     "Web検索（WebSearch / WebFetch）は使えるので、最新情報が必要なら検索してから答えてください。最終出力は下記の形式で。",
     "ユーザーの判断が要る分岐では、質問を1つに絞り、reply の末尾に番号付き選択肢（2〜4個、各1行、",
     "推奨には「（おすすめ）」を付ける）を提示すること。ユーザーは番号だけで返答できる。",
@@ -459,6 +462,7 @@ function buildPrompt(taskRow: TaskRow | null, history: ChatMessage[], message: s
   out.push("# 見積りと実績（このユーザーの較正データ）", estimationHistory(), "");
   out.push("# ユーザーのライフログ要約", summarizeLogs(), "");
   out.push("# 最近のノート（講義の文字起こし等。ユーザーが内容に触れたら参照）", recentNotes(), "");
+  if (ragBlock) out.push(ragBlock, "");
   if (history.length) {
     out.push("# これまでの会話");
     for (const m of history) {
@@ -512,7 +516,13 @@ export async function sendChat(opts: {
     : opts.message;
   saveMessage(threadId, taskKey, "user", displayMessage);
 
-  const res = await runAgent(buildPrompt(taskRow, history, opts.message, files), {
+  // 自動RAG: 課題(OneDrive等)・ノート・過去チャットからOWUIナレッジを検索して
+  // 文脈注入。時間推定でも該当資料を見て答えられる。失敗時は空で素通し。
+  const ragQuery = [taskRow?.title, taskRow?.notes, opts.message].filter(Boolean).join(" ").slice(0, 600);
+  const rag = await ragContext(ragQuery);
+  if (rag.sources.length) opts.onEvent?.(`📂 資料検索: ${rag.sources.slice(0, 3).join(" / ")}`);
+
+  const res = await runAgent(buildPrompt(taskRow, history, opts.message, files, rag.block), {
     agent,
     model,
     effort,
