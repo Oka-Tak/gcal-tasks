@@ -7,7 +7,7 @@
 
 const OWUI = process.env.KAIROS_OWUI_URL ?? "http://127.0.0.1:3300";
 const ENABLED = process.env.KAIROS_AUTO_RAG !== "0";
-const TIMEOUT_MS = 9_000;
+const TIMEOUT_MS = 15_000;
 const MIN_SCORE = 0.45; // vector cosine similarity (higher = better)
 const MAX_CHUNKS = 8; // 検索ヒット数
 const MAX_EXPAND = 4; // 実ファイルから周辺文脈を展開する件数
