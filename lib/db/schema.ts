@@ -181,6 +181,28 @@ export const notes = sqliteTable(
 );
 
 /**
+ * 1ノート複数音源（前半/後半、日本語の講義+英語の上映など）。音源ごとに
+ * 言語・文字起こし・状態を持ち、全音源が済んだら結合して要約する。
+ * 旧ノートの notes.audio_path は残しつつ、新規はこちらに一本化。
+ */
+export const noteAudios = sqliteTable(
+  "note_audios",
+  {
+    id: text("id").primaryKey(), // uuid
+    noteId: text("note_id").notNull(),
+    seq: integer("seq").notNull(), // 結合順 (1,2,…)
+    label: text("label"), // 表示名（元ファイル名など）
+    audioPath: text("audio_path").notNull(),
+    language: text("language"), // ja(既定) | en | … | auto
+    transcript: text("transcript"),
+    status: text("status").notNull(), // pending | transcribing | done | error
+    error: text("error"),
+    createdAt: integer("created_at"),
+  },
+  (t) => [index("note_audios_note").on(t.noteId)],
+);
+
+/**
  * NotebookLM的な「ソース資料」: ノートブック（=OWUIコレクション）に任意の
  * ファイル（pdf/pptx/docx等）を追加して RAG から引けるようにする。
  * 実体は data/materials/ に保存し、OWUI へは pushLocalFileToOwui で登録。

@@ -2,9 +2,9 @@ import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import { db } from "./db";
-import { events, notes } from "./db/schema";
+import { events, noteAudios, notes } from "./db/schema";
 import { env } from "./env";
 import { runAgent } from "./agent";
 import { pushNoteToOwui } from "./owui";
@@ -21,6 +21,15 @@ import { pushNoteToOwui } from "./owui";
 const AUDIO_SUBDIR = "audio";
 const AUDIO_EXT = new Set([".mp3", ".m4a", ".wav", ".ogg", ".opus", ".flac", ".aac", ".webm", ".mp4"]);
 
+export interface NoteAudioView {
+  id: string;
+  seq: number;
+  label: string | null;
+  language: string | null;
+  status: string; // pending | transcribing | done | error
+  error: string | null;
+}
+
 export interface NoteView {
   id: string;
   eventKey: string | null;
@@ -30,13 +39,20 @@ export interface NoteView {
   status: string;
   error: string | null;
   hasAudio: boolean;
+  audios: NoteAudioView[];
   createdAt: number | null;
   updatedAt: number | null;
 }
 
 type NoteRow = typeof notes.$inferSelect;
+type AudioRow = typeof noteAudios.$inferSelect;
 
-function view(r: NoteRow): NoteView {
+function audioRows(noteId: string): AudioRow[] {
+  return db.select().from(noteAudios).where(eq(noteAudios.noteId, noteId)).orderBy(asc(noteAudios.seq)).all();
+}
+
+function view(r: NoteRow, audios?: AudioRow[]): NoteView {
+  const a = audios ?? audioRows(r.id);
   return {
     id: r.id,
     eventKey: r.eventKey,
@@ -45,7 +61,8 @@ function view(r: NoteRow): NoteView {
     transcript: r.transcript,
     status: r.status,
     error: r.error,
-    hasAudio: !!r.audioPath,
+    hasAudio: !!r.audioPath || a.length > 0,
+    audios: a.map((x) => ({ id: x.id, seq: x.seq, label: x.label, language: x.language, status: x.status, error: x.error })),
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
   };
@@ -55,7 +72,7 @@ export function listNotes(eventKey?: string | null): NoteView[] {
   const rows = eventKey
     ? db.select().from(notes).where(eq(notes.eventKey, eventKey)).orderBy(desc(notes.createdAt)).all()
     : db.select().from(notes).where(isNull(notes.deletedAt)).orderBy(desc(notes.createdAt)).all();
-  return rows.filter((r) => !r.deletedAt).map(view);
+  return rows.filter((r) => !r.deletedAt).map((r) => view(r));
 }
 
 export function getNote(id: string): NoteView | null {
@@ -152,6 +169,7 @@ function runWhisperx(audioAbs: string, outDir: string, language = "ja"): Promise
 function summarizePrompt(transcript: string, title: string, eventLabel: string | null): string {
   return [
     "以下は講義・会議などの音声を機械的に文字起こししたテキストです（誤認識を含みます）。",
+    "「===== 音源N: … =====」の見出しがある場合は複数の録音を順に並べた1セットです（例: 前半/後半、講義+上映動画）。全体をひとつの内容として扱ってください。",
     "内容を整理して、後から見返せる Markdown ノートを日本語で作ってください。",
     "構成: 冒頭に3行以内の要約。次に「## トピック」ごとの整理（見出し＋箇条書き）。",
     "課題・宿題・締切・約束事があれば必ず「## TODO・締切」節に抜き出す。",
@@ -167,22 +185,92 @@ function summarizePrompt(transcript: string, title: string, eventLabel: string |
   ].filter(Boolean).join("\n");
 }
 
-/** Fire-and-forget pipeline body. All failures land in the note row. */
-async function pipeline(noteId: string, audioAbs: string, title: string, eventLabel: string | null, notebook: string | null, language = "ja") {
-  const outDir = path.join(path.dirname(audioAbs), `wx-${noteId}`);
+/** 旧ノート(notes.audio_path 単発)を note_audios 一行に読み替える。 */
+function ensureAudioRows(r: NoteRow): AudioRow[] {
+  let rows = audioRows(r.id);
+  if (rows.length === 0 && r.audioPath) {
+    db.insert(noteAudios)
+      .values({
+        id: crypto.randomUUID(),
+        noteId: r.id,
+        seq: 1,
+        label: path.basename(r.audioPath),
+        audioPath: r.audioPath,
+        language: "ja",
+        transcript: r.transcript,
+        status: r.transcript ? "done" : "pending",
+        createdAt: r.createdAt ?? Date.now(),
+      })
+      .run();
+    rows = audioRows(r.id);
+  }
+  return rows;
+}
+
+async function transcribeOne(a: AudioRow): Promise<void> {
+  const outDir = path.join(path.dirname(a.audioPath), `wx-${a.id}`);
+  db.update(noteAudios).set({ status: "transcribing", error: null }).where(eq(noteAudios.id, a.id)).run();
   try {
-    const wx = await runWhisperx(audioAbs, outDir, language);
+    const wx = await runWhisperx(a.audioPath, outDir, a.language ?? "ja");
     if (!wx.ok) {
-      setStatus(noteId, "error", { error: `文字起こし失敗: ${wx.err}` });
+      db.update(noteAudios).set({ status: "error", error: wx.err.slice(0, 500) }).where(eq(noteAudios.id, a.id)).run();
       return;
     }
-    const base = path.basename(audioAbs).replace(/\.[^.]+$/, "");
+    const base = path.basename(a.audioPath).replace(/\.[^.]+$/, "");
     const transcript = (await fs.readFile(path.join(outDir, `${base}.txt`), "utf8")).trim();
-    if (!transcript) {
-      setStatus(noteId, "error", { error: "文字起こし結果が空でした" });
+    db.update(noteAudios)
+      .set(transcript ? { status: "done", transcript: transcript.slice(0, 200_000) } : { status: "error", error: "文字起こし結果が空でした" })
+      .where(eq(noteAudios.id, a.id))
+      .run();
+  } catch (e) {
+    db.update(noteAudios).set({ status: "error", error: String(e).slice(0, 500) }).where(eq(noteAudios.id, a.id)).run();
+  } finally {
+    await fs.rm(outDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/** 全音源の文字起こしを結合（1本ならそのまま、複数なら見出し区切り）。 */
+function combineTranscripts(rows: AudioRow[]): string {
+  const done = rows.filter((r) => r.status === "done" && r.transcript);
+  if (done.length === 1 && rows.length === 1) return done[0].transcript!;
+  return rows
+    .map((r) => {
+      const head = `===== 音源${r.seq}: ${r.label ?? "(無題)"}${r.language && r.language !== "ja" ? ` [${r.language}]` : ""} =====`;
+      const body = r.status === "done" ? (r.transcript ?? "") : `(文字起こし失敗: ${r.error ?? r.status})`;
+      return `${head}\n\n${body}`;
+    })
+    .join("\n\n");
+}
+
+// 同じノートの pipeline 二重起動を防ぐ。実行中に再要求が来たら（要約中の
+// 音源追加など、ループが拾えないタイミング）終了後にもう一周する。
+const inFlight = new Set<string>();
+const rerun = new Set<string>();
+
+/**
+ * Fire-and-forget pipeline: pending な音源を seq 順に whisperx へ流し、
+ * 全部さばけたら結合して要約する。失敗はノート行と音源行に残る。
+ */
+async function pipeline(noteId: string, title: string, eventLabel: string | null, notebook: string | null) {
+  if (inFlight.has(noteId)) {
+    rerun.add(noteId);
+    return;
+  }
+  inFlight.add(noteId);
+  try {
+    for (;;) {
+      const next = audioRows(noteId).find((a) => a.status === "pending" || a.status === "transcribing");
+      if (!next) break;
+      await transcribeOne(next);
+    }
+    const rows = audioRows(noteId);
+    if (rows.length === 0 || !rows.some((r) => r.status === "done" && r.transcript)) {
+      const err = rows.map((r) => r.error).filter(Boolean)[0] ?? "文字起こし結果が空でした";
+      setStatus(noteId, "error", { error: `文字起こし失敗: ${err}` });
       return;
     }
-    setStatus(noteId, "summarizing", { transcript: transcript.slice(0, 200_000) });
+    const transcript = combineTranscripts(rows).slice(0, 200_000);
+    setStatus(noteId, "summarizing", { transcript });
 
     const res = await runAgent(summarizePrompt(transcript, title, eventLabel), {
       agent: "claude",
@@ -203,51 +291,83 @@ async function pipeline(noteId: string, audioAbs: string, title: string, eventLa
   } catch (e) {
     setStatus(noteId, "error", { error: String(e).slice(0, 500) });
   } finally {
-    await fs.rm(outDir, { recursive: true, force: true }).catch(() => {});
+    inFlight.delete(noteId);
+    if (rerun.delete(noteId)) void pipeline(noteId, title, eventLabel, notebook);
   }
 }
 
-/** Save the uploaded audio and start the pipeline. Returns the new note id. */
-export async function ingestAudioNote(opts: {
+export interface AudioSource {
   buf: Buffer;
   filename: string;
+  language?: string | null; // "ja"(既定) | "en" 等 | "auto"=自動判定
+}
+
+/** 音源ファイルを保存して note_audios 行を積む。 */
+async function saveAudioSource(noteId: string, seq: number, src: AudioSource): Promise<void> {
+  const ext = (path.extname(src.filename) || "").toLowerCase();
+  if (!AUDIO_EXT.has(ext)) throw new Error(`未対応の形式です: ${ext || "(拡張子なし)"} (${src.filename})`);
+  const dir = path.join(path.resolve(env.dataDir), AUDIO_SUBDIR);
+  await fs.mkdir(dir, { recursive: true });
+  const audioId = crypto.randomUUID();
+  const audioAbs = path.join(dir, `${audioId}${ext}`);
+  await fs.writeFile(audioAbs, src.buf);
+  db.insert(noteAudios)
+    .values({
+      id: audioId,
+      noteId,
+      seq,
+      label: src.filename,
+      audioPath: audioAbs,
+      language: src.language?.trim() || "ja",
+      status: "pending",
+      createdAt: Date.now(),
+    })
+    .run();
+}
+
+/** Save the uploaded audio(s) and start the pipeline. Returns the new note id. */
+export async function ingestAudioNote(opts: {
+  files: AudioSource[]; // 1セット＝複数音源可（前半/後半、日本語+英語上映など）
   title: string;
   eventKey?: string | null;
   eventLabel?: string | null; // e.g. "狩野研先端 7/2 14:25" — context for the summary
   notebook?: string | null; // Open WebUI collection override (packing)
-  language?: string | null; // "ja"(既定) | "en" 等 | "auto"=自動判定
 }): Promise<string> {
-  const ext = (path.extname(opts.filename) || "").toLowerCase();
-  if (!AUDIO_EXT.has(ext)) throw new Error(`未対応の形式です: ${ext || "(拡張子なし)"}`);
-  const dir = path.join(path.resolve(env.dataDir), AUDIO_SUBDIR);
-  await fs.mkdir(dir, { recursive: true });
+  if (opts.files.length === 0) throw new Error("音声ファイルがありません");
   const id = crypto.randomUUID();
-  const audioAbs = path.join(dir, `${id}${ext}`);
-  await fs.writeFile(audioAbs, opts.buf);
-
   const now = Date.now();
   db.insert(notes)
     .values({
       id,
       eventKey: opts.eventKey ?? null,
-      title: opts.title || opts.filename,
+      title: opts.title || opts.files[0].filename,
       status: "transcribing",
-      audioPath: audioAbs,
       createdAt: now,
       updatedAt: now,
     })
     .run();
+  try {
+    for (let i = 0; i < opts.files.length; i++) await saveAudioSource(id, i + 1, opts.files[i]);
+  } catch (e) {
+    setStatus(id, "error", { error: String(e).slice(0, 500) });
+    throw e;
+  }
 
   // detached — the UI polls /api/notes for status
-  void pipeline(
-    id,
-    audioAbs,
-    opts.title || opts.filename,
-    opts.eventLabel ?? null,
-    notebookFor(opts.notebook, opts.eventKey),
-    opts.language?.trim() || "ja",
-  );
+  void pipeline(id, opts.title || opts.files[0].filename, opts.eventLabel ?? null, notebookFor(opts.notebook, opts.eventKey));
   return id;
+}
+
+/** 既存ノートに音源を追加し、文字起こし→再結合→再要約する。 */
+export async function addAudiosToNote(noteId: string, files: AudioSource[]): Promise<boolean> {
+  const r = db.select().from(notes).where(eq(notes.id, noteId)).get();
+  if (!r || r.deletedAt || files.length === 0) return false;
+  const existing = ensureAudioRows(r);
+  let seq = existing.reduce((m, a) => Math.max(m, a.seq), 0);
+  for (const f of files) await saveAudioSource(noteId, ++seq, f);
+  setStatus(noteId, "transcribing", { error: null });
+  void pipeline(noteId, r.title ?? "(無題)", null, r.notebook ?? notebookFor(null, r.eventKey));
+  return true;
 }
 
 /** Create an empty manual note (no audio). */
@@ -278,11 +398,20 @@ export function createManualNote(opts: { title: string; content?: string; eventK
   return id;
 }
 
-/** 音声が残っているノートを再文字起こし（言語・アンチループ設定を変えてやり直す）。 */
-export function redoTranscription(id: string, language = "ja"): boolean {
+/**
+ * 音声が残っているノートを再文字起こし（言語・アンチループ設定を変えてやり直す）。
+ * audioId 指定でその音源だけ、省略で全音源をやり直し、結合・要約し直す。
+ */
+export function redoTranscription(id: string, language = "ja", audioId?: string | null): boolean {
   const r = db.select().from(notes).where(eq(notes.id, id)).get();
-  if (!r || r.deletedAt || !r.audioPath) return false;
+  if (!r || r.deletedAt) return false;
+  const rows = ensureAudioRows(r);
+  const targets = audioId ? rows.filter((a) => a.id === audioId) : rows;
+  if (targets.length === 0) return false;
+  for (const a of targets) {
+    db.update(noteAudios).set({ status: "pending", language, error: null }).where(eq(noteAudios.id, a.id)).run();
+  }
   setStatus(id, "transcribing", { error: null });
-  void pipeline(id, r.audioPath, r.title ?? "(無題)", null, r.notebook, language);
+  void pipeline(id, r.title ?? "(無題)", null, r.notebook ?? notebookFor(null, r.eventKey));
   return true;
 }

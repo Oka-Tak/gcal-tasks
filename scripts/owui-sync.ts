@@ -29,6 +29,9 @@ const EXTRACT_PYTHON =
   path.join(os.homedir(), ".local", "share", "uv", "tools", "open-webui", "bin", "python");
 // pace pushes so OWUI's CPU embedding never saturates the box (load hit 21 once)
 const THROTTLE_MS = Number(process.env.KAIROS_SYNC_THROTTLE_MS ?? 700);
+// per-run time budget: hours-long runs starve OWUI (memory creep → oomd kill,
+// UI unresponsive). Stop cleanly and let the next timer tick continue.
+const DEADLINE = Date.now() + Number(process.env.KAIROS_SYNC_MAX_MS ?? 18 * 60_000);
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -115,7 +118,9 @@ async function main() {
     state[rel] = e;
     if (++sinceSave >= 25) { sinceSave = 0; await saveState(); }
   };
+  let outOfTime = false;
   for (const { abs, rel, collection } of jobs) {
+    if (Date.now() > DEADLINE) { outOfTime = true; break; }
     seen.add(rel);
     const ext = path.extname(abs).toLowerCase();
     if (!owuiSupportedExt(ext)) { skipped++; continue; }
@@ -172,17 +177,21 @@ async function main() {
     await sleep(THROTTLE_MS);
   }
 
-  // files that vanished from the mirror get detached from RAG too
-  for (const rel of Object.keys(state)) {
-    if (seen.has(rel)) continue;
-    if (state[rel].fileId) await removeOwuiFile(state[rel].collection, state[rel].fileId).catch(() => {});
-    delete state[rel];
-    removed++;
-    console.log(`[owui-sync] removed ${rel}`);
+  // files that vanished from the mirror get detached from RAG too.
+  // Skipped when the time budget cut the walk short: `seen` is incomplete
+  // then, and this pass would detach files we simply didn't reach.
+  if (!outOfTime) {
+    for (const rel of Object.keys(state)) {
+      if (seen.has(rel)) continue;
+      if (state[rel].fileId) await removeOwuiFile(state[rel].collection, state[rel].fileId).catch(() => {});
+      delete state[rel];
+      removed++;
+      console.log(`[owui-sync] removed ${rel}`);
+    }
   }
 
   await saveState();
-  console.log(`[owui-sync] done: +${pushed} -${removed} (skipped ${skipped}, no-text ${failed}, retry-later ${transient})`);
+  console.log(`[owui-sync] done${outOfTime ? " (time budget — 続きは次回)" : ""}: +${pushed} -${removed} (skipped ${skipped}, no-text ${failed}, retry-later ${transient})`);
 }
 
 void main().catch((e) => {

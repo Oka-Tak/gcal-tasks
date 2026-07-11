@@ -11,11 +11,31 @@ import { RefreshIcon } from "../icons";
  * The list polls while any note is still transcribing/summarizing.
  */
 
+export type NoteAudioView = {
+  id: string; seq: number; label: string | null; language: string | null;
+  status: string; error: string | null;
+};
+
 export type NoteView = {
   id: string; eventKey: string | null; title: string; content: string | null;
   transcript: string | null; status: string; error: string | null;
-  hasAudio: boolean; createdAt: number | null; updatedAt: number | null;
+  hasAudio: boolean; audios: NoteAudioView[];
+  createdAt: number | null; updatedAt: number | null;
 };
+
+const LANG_LABEL: Record<string, string> = { ja: "日本語", en: "英語", auto: "自動判定" };
+
+function LangSelect({ value, onChange, title }: {
+  value: string; onChange: (v: string) => void; title?: string;
+}) {
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)} title={title ?? "音声の言語"}>
+      <option value="ja">日本語</option>
+      <option value="en">英語</option>
+      <option value="auto">自動判定</option>
+    </select>
+  );
+}
 
 const pad = (n: number) => String(n).padStart(2, "0");
 const fmtDate = (ms: number | null) => {
@@ -46,29 +66,30 @@ export function AudioUpload({ eventKey, eventLabel, onStarted, compact }: {
   eventKey?: string | null; eventLabel?: string | null;
   onStarted: () => void; compact?: boolean;
 }) {
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<{ file: File; lang: string }[]>([]);
   const [title, setTitle] = useState("");
   const [notebook, setNotebook] = useState("");
-  const [lang, setLang] = useState("ja");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const go = async () => {
-    if (!file || busy) return;
+    if (files.length === 0 || busy) return;
     setBusy(true);
     setErr(null);
     try {
       const fd = new FormData();
-      fd.append("file", file);
-      fd.append("title", title.trim() || file.name);
+      for (const f of files) {
+        fd.append("file", f.file);
+        fd.append("language", f.lang);
+      }
+      fd.append("title", title.trim() || files[0].file.name);
       if (notebook.trim()) fd.append("notebook", notebook.trim());
       if (eventKey) fd.append("eventKey", eventKey);
       if (eventLabel) fd.append("eventLabel", eventLabel);
-      if (lang !== "ja") fd.append("language", lang);
       const r = await fetch("/api/notes/ingest", { method: "POST", body: fd });
       if (!r.ok) throw new Error(await r.text());
-      setFile(null);
+      setFiles([]);
       setTitle("");
       if (fileRef.current) fileRef.current.value = "";
       onStarted();
@@ -84,25 +105,41 @@ export function AudioUpload({ eventKey, eventLabel, onStarted, compact }: {
       {!compact && <h3>🎙 音声からノートを作る</h3>}
       {err && <p className="errline">{err}</p>}
       <div className="uprow">
-        <input ref={fileRef} type="file" accept="audio/*,.m4a,.mp3,.wav,.ogg,.opus,.mp4"
-          onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+        <input ref={fileRef} type="file" multiple accept="audio/*,.m4a,.mp3,.wav,.ogg,.opus,.mp4"
+          onChange={(e) => setFiles(Array.from(e.target.files ?? []).map((file) => ({ file, lang: "ja" })))} />
         <input placeholder="タイトル（例: 経営管理 第12回）" value={title}
           style={{ flex: 1, minWidth: 140 }}
           onChange={(e) => setTitle(e.target.value)} />
-        <select value={lang} onChange={(e) => setLang(e.target.value)} title="音声の言語">
-          <option value="ja">日本語</option>
-          <option value="en">英語</option>
-          <option value="auto">自動判定</option>
-        </select>
+        {files.length === 1 && (
+          <LangSelect value={files[0].lang}
+            onChange={(lang) => setFiles((fs) => [{ ...fs[0], lang }])} />
+        )}
         {!compact && (
           <input placeholder="分類（例: 経営管理）※AIチャットの検索単位" value={notebook}
             style={{ flex: 1, minWidth: 120 }}
             onChange={(e) => setNotebook(e.target.value)} />
         )}
-        <button className="btn btn-primary" disabled={!file || busy} onClick={() => void go()}>
-          {busy ? "アップロード中…" : "文字起こし開始"}
+        <button className="btn btn-primary" disabled={files.length === 0 || busy} onClick={() => void go()}>
+          {busy ? "アップロード中…" : files.length > 1 ? `${files.length}本を1セットで開始` : "文字起こし開始"}
         </button>
       </div>
+      {files.length > 1 && (
+        <div style={{ margin: "6px 0 0", display: "grid", gap: 4 }}>
+          {files.map((f, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span className="hint" style={{ margin: 0 }}>音源{i + 1}</span>
+              <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.file.name}</span>
+              <LangSelect value={f.lang} title={`音源${i + 1}の言語`}
+                onChange={(lang) => setFiles((fs) => fs.map((x, j) => (j === i ? { ...x, lang } : x)))} />
+              <button className="btn" title="この音源を外す"
+                onClick={() => setFiles((fs) => fs.filter((_, j) => j !== i))}>✕</button>
+            </div>
+          ))}
+          <p className="hint" style={{ margin: 0 }}>
+            複数ファイルは順番に文字起こしして1つのノートにまとめます（前半/後半、日本語の講義+英語の上映など、音源ごとに言語を選べます）。
+          </p>
+        </div>
+      )}
       {!compact && (
         <p className="hint" style={{ margin: "6px 0 0" }}>
           whisperX がこの PC 上で文字起こしし（音声は外部に出ません）、AI が Markdown
@@ -174,11 +211,34 @@ function NoteModal({ id, onClose, onChanged }: {
     onClose();
   };
 
-  // 文字起こしのやり直し（幻覚ループ・言語ミス時のリカバリ）
-  const redo = async (language: string) => {
-    if (!confirm(`この音声を${language === "ja" ? "日本語" : language === "en" ? "英語" : "自動判定"}で再文字起こしします。現在の文字起こしと要約は上書きされます。よろしいですか？`)) return;
+  // 文字起こしのやり直し（幻覚ループ・言語ミス時のリカバリ）。audioId 指定でその音源だけ。
+  const redo = async (language: string, audioId?: string, label?: string) => {
+    const target = audioId ? `音源「${label ?? ""}」` : "全音源";
+    if (!confirm(`${target}を${LANG_LABEL[language] ?? language}で再文字起こしします。現在の文字起こしと要約は上書きされます。よろしいですか？`)) return;
     try {
-      await api("POST", "/api/notes/redo", { id, language });
+      await api("POST", "/api/notes/redo", { id, language, ...(audioId ? { audioId } : {}) });
+      await load();
+      onChanged();
+    } catch (e) {
+      setErr(String(e).slice(0, 200));
+    }
+  };
+
+  // 音源の追加（選んだ言語で即アップロード → 追加分だけ文字起こし → 再要約）
+  const [addLang, setAddLang] = useState("ja");
+  const addRef = useRef<HTMLInputElement>(null);
+  const addAudios = async (list: FileList | null) => {
+    if (!list || list.length === 0) return;
+    try {
+      const fd = new FormData();
+      fd.append("id", id);
+      for (const f of Array.from(list)) {
+        fd.append("file", f);
+        fd.append("language", addLang);
+      }
+      const r = await fetch("/api/notes/audio", { method: "POST", body: fd });
+      if (!r.ok) throw new Error(await r.text());
+      if (addRef.current) addRef.current.value = "";
       await load();
       onChanged();
     } catch (e) {
@@ -224,6 +284,36 @@ function NoteModal({ id, onClose, onChanged }: {
             ) : note.status === "done" ? (
               <p className="hint">（本文なし）</p>
             ) : null}
+            {note.audios.length > 0 && (
+              <div className="tsfold">
+                <p className="hint" style={{ margin: "4px 0" }}>🎙 音源（{note.audios.length}）</p>
+                {note.audios.map((a) => (
+                  <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "2px 0" }}>
+                    <span className="hint" style={{ margin: 0 }}>#{a.seq}</span>
+                    <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {a.label ?? "(無題)"}
+                    </span>
+                    <span className="hint" style={{ margin: 0 }}>
+                      {LANG_LABEL[a.language ?? "ja"] ?? a.language}
+                      {a.status === "pending" && " ・待機中"}
+                      {a.status === "transcribing" && " ・文字起こし中…"}
+                      {a.status === "error" && ` ・失敗: ${(a.error ?? "").slice(0, 60)}`}
+                    </span>
+                    {(note.status === "done" || note.status === "error") && (
+                      <select
+                        className="btn" defaultValue="" title="この音源だけ再文字起こし"
+                        onChange={(e) => { if (e.target.value) { void redo(e.target.value, a.id, a.label ?? `#${a.seq}`); e.target.value = ""; } }}
+                      >
+                        <option value="" disabled>🔁</option>
+                        <option value="ja">日本語で</option>
+                        <option value="en">英語で</option>
+                        <option value="auto">自動判定で</option>
+                      </select>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
             {note.transcript && (
               <div className="tsfold">
                 <button className="link" onClick={() => setShowTranscript((v) => !v)}>
@@ -247,6 +337,16 @@ function NoteModal({ id, onClose, onChanged }: {
                 <option value="en">英語で</option>
                 <option value="auto">自動判定で</option>
               </select>
+            )}
+            {!editing && (note.status === "done" || note.status === "error") && (
+              <>
+                <input ref={addRef} type="file" multiple hidden
+                  accept="audio/*,.m4a,.mp3,.wav,.ogg,.opus,.mp4"
+                  onChange={(e) => void addAudios(e.target.files)} />
+                <LangSelect value={addLang} onChange={setAddLang} title="追加する音源の言語" />
+                <button className="btn" title="このノートに音源を追加（結合して要約し直す）"
+                  onClick={() => addRef.current?.click()}>＋音源追加</button>
+              </>
             )}
             <div className="spacer" />
             {editing ? (
