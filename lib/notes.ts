@@ -8,7 +8,7 @@ import { events, noteAudios, notes } from "./db/schema";
 import { env } from "./env";
 import { runAgent, runAgentAuto } from "./agent";
 import { pushNoteToOwui } from "./owui";
-import { exportNoteFiles, removeExportedFiles } from "./notes-export";
+import { exportNoteFiles, inferCourseNotebook, removeExportedFiles } from "./notes-export";
 
 /**
  * NotebookLM-ish notes: audio in → whisperX transcript (local CPU) → agent
@@ -195,7 +195,8 @@ function summarizePrompt(transcript: string, title: string, eventLabel: string |
     "課題・宿題・締切・約束事があれば必ず「## TODO・締切」節に抜き出す。",
     "登場した人名・固有名詞は「## 人物・用語」節に一行ずつ（分かる範囲の説明付き）。",
     "誤認識と思われる箇所は文脈から自然に補正してよい（創作はしない）。",
-    "Markdown 本文だけを出力すること（前置き・コードフェンス不要）。",
+    "ツールは一切使わないこと。ファイルへの保存も試みないこと（保存はこちらで行う）。",
+    "Markdown 本文だけを出力すること（前置き・断り書き・コードフェンス不要）。",
     "",
     `# タイトル: ${title}`,
     eventLabel ? `# 関連する予定: ${eventLabel}` : "",
@@ -303,9 +304,12 @@ async function pipeline(noteId: string, title: string, eventLabel: string | null
       return;
     }
     const content = res.text.trim().slice(0, 200_000);
-    setStatus(noteId, "done", { content, jobId: res.jobId, notebook });
+    // 分類も予定も無いノートはタイトルから授業を推定（「地震防災0711」→講義: 地震防災）。
+    // これが決まると OWUI の棚もフォルダ書き出し先も授業に揃う。
+    const nb = notebook ?? (await inferCourseNotebook(title).catch(() => null));
+    setStatus(noteId, "done", { content, jobId: res.jobId, notebook: nb });
     // NotebookLM layer: make the note queryable from the Open WebUI chat
-    void pushNoteToOwui({ id: noteId, title, content, transcript }, notebook).then((fid) => {
+    void pushNoteToOwui({ id: noteId, title, content, transcript }, nb).then((fid) => {
       if (fid) db.update(notes).set({ owuiFileId: fid }).where(eq(notes.id, noteId)).run();
     });
     // フォルダ集約: 要約md+全文txt を OneDrive の授業資料フォルダ（回別があればそこ）へ

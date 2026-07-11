@@ -142,6 +142,19 @@ export function dateFromTitle(title: string | null | undefined, baseMs: number |
 }
 
 /**
+ * 分類も予定も無いノートのタイトルから授業を推定する（「地震防災0711」→
+ * 授業資料/地震防災 がある → 「講義: 地震防災」）。最長一致。見つからなければ null。
+ */
+export async function inferCourseNotebook(title: string | null | undefined): Promise<string | null> {
+  const coursesRoot = env.notesExportDir;
+  if (!coursesRoot || !title?.trim()) return null;
+  const t = title.trim();
+  const hits = (await dirNames(coursesRoot)).filter((d) => !/^20\d\d$/.test(d) && t.includes(d));
+  if (hits.length === 0) return null;
+  return `講義: ${hits.sort((a, b) => b.length - a.length)[0]}`;
+}
+
+/**
  * ノートの置き場所（絶対パス）を解決する。エクスポート先未設定なら null。
  * addMaterial（資料アップロード）も同じ解決を使い、資料とノートを同じ棚に置く。
  */
