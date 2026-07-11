@@ -112,15 +112,19 @@ export function notebookFor(explicit: string | null | undefined, eventKey: strin
 
 /* ------------------------------------------------------------ transcription */
 
-function runWhisperx(audioAbs: string, outDir: string): Promise<{ ok: boolean; err: string }> {
+function runWhisperx(audioAbs: string, outDir: string, language = "ja"): Promise<{ ok: boolean; err: string }> {
   return new Promise((resolve) => {
     const args = [
       audioAbs,
       "--model", env.whisperxModel,
-      "--language", "ja",
+      // "auto" は --language を渡さない = Whisperの自動判定(冒頭30秒で検出)
+      ...(language && language !== "auto" ? ["--language", language] : []),
       "--device", "cpu",
       "--compute_type", "int8",
       "--no_align",
+      // 幻覚ループ対策: 前セグメントの文脈引き継ぎを切る(雑音・無音で
+      // 「私たちの話をしていますが…」型の無限繰り返しになる既知の問題)
+      "--condition_on_previous_text", "False",
       "--output_dir", outDir,
       "--output_format", "txt",
     ];
@@ -164,10 +168,10 @@ function summarizePrompt(transcript: string, title: string, eventLabel: string |
 }
 
 /** Fire-and-forget pipeline body. All failures land in the note row. */
-async function pipeline(noteId: string, audioAbs: string, title: string, eventLabel: string | null, notebook: string | null) {
+async function pipeline(noteId: string, audioAbs: string, title: string, eventLabel: string | null, notebook: string | null, language = "ja") {
   const outDir = path.join(path.dirname(audioAbs), `wx-${noteId}`);
   try {
-    const wx = await runWhisperx(audioAbs, outDir);
+    const wx = await runWhisperx(audioAbs, outDir, language);
     if (!wx.ok) {
       setStatus(noteId, "error", { error: `文字起こし失敗: ${wx.err}` });
       return;
@@ -211,6 +215,7 @@ export async function ingestAudioNote(opts: {
   eventKey?: string | null;
   eventLabel?: string | null; // e.g. "狩野研先端 7/2 14:25" — context for the summary
   notebook?: string | null; // Open WebUI collection override (packing)
+  language?: string | null; // "ja"(既定) | "en" 等 | "auto"=自動判定
 }): Promise<string> {
   const ext = (path.extname(opts.filename) || "").toLowerCase();
   if (!AUDIO_EXT.has(ext)) throw new Error(`未対応の形式です: ${ext || "(拡張子なし)"}`);
@@ -240,6 +245,7 @@ export async function ingestAudioNote(opts: {
     opts.title || opts.filename,
     opts.eventLabel ?? null,
     notebookFor(opts.notebook, opts.eventKey),
+    opts.language?.trim() || "ja",
   );
   return id;
 }
@@ -270,4 +276,13 @@ export function createManualNote(opts: { title: string; content?: string; eventK
     });
   }
   return id;
+}
+
+/** 音声が残っているノートを再文字起こし（言語・アンチループ設定を変えてやり直す）。 */
+export function redoTranscription(id: string, language = "ja"): boolean {
+  const r = db.select().from(notes).where(eq(notes.id, id)).get();
+  if (!r || r.deletedAt || !r.audioPath) return false;
+  setStatus(id, "transcribing", { error: null });
+  void pipeline(id, r.audioPath, r.title ?? "(無題)", null, r.notebook, language);
+  return true;
 }

@@ -34,6 +34,7 @@ export async function POST(req: NextRequest) {
       eventKey: (form.get("eventKey") as string) || null,
       eventLabel: (form.get("eventLabel") as string) || null,
       notebook: (form.get("notebook") as string) || null,
+      language: (form.get("language") as string) || null, // ja(既定)/en/auto等
     });
     return Response.json({ id });
   } catch (e) {

@@ -49,6 +49,7 @@ export function AudioUpload({ eventKey, eventLabel, onStarted, compact }: {
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const [notebook, setNotebook] = useState("");
+  const [lang, setLang] = useState("ja");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -64,6 +65,7 @@ export function AudioUpload({ eventKey, eventLabel, onStarted, compact }: {
       if (notebook.trim()) fd.append("notebook", notebook.trim());
       if (eventKey) fd.append("eventKey", eventKey);
       if (eventLabel) fd.append("eventLabel", eventLabel);
+      if (lang !== "ja") fd.append("language", lang);
       const r = await fetch("/api/notes/ingest", { method: "POST", body: fd });
       if (!r.ok) throw new Error(await r.text());
       setFile(null);
@@ -87,6 +89,11 @@ export function AudioUpload({ eventKey, eventLabel, onStarted, compact }: {
         <input placeholder="タイトル（例: 経営管理 第12回）" value={title}
           style={{ flex: 1, minWidth: 140 }}
           onChange={(e) => setTitle(e.target.value)} />
+        <select value={lang} onChange={(e) => setLang(e.target.value)} title="音声の言語">
+          <option value="ja">日本語</option>
+          <option value="en">英語</option>
+          <option value="auto">自動判定</option>
+        </select>
         {!compact && (
           <input placeholder="分類（例: 経営管理）※AIチャットの検索単位" value={notebook}
             style={{ flex: 1, minWidth: 120 }}
@@ -167,6 +174,18 @@ function NoteModal({ id, onClose, onChanged }: {
     onClose();
   };
 
+  // 文字起こしのやり直し（幻覚ループ・言語ミス時のリカバリ）
+  const redo = async (language: string) => {
+    if (!confirm(`この音声を${language === "ja" ? "日本語" : language === "en" ? "英語" : "自動判定"}で再文字起こしします。現在の文字起こしと要約は上書きされます。よろしいですか？`)) return;
+    try {
+      await api("POST", "/api/notes/redo", { id, language });
+      await load();
+      onChanged();
+    } catch (e) {
+      setErr(String(e).slice(0, 200));
+    }
+  };
+
   return (
     <div className="scrim" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal wide">
@@ -218,6 +237,17 @@ function NoteModal({ id, onClose, onChanged }: {
         {note && (
           <div className="modal-foot">
             <button className="link-danger" onClick={() => void del()}>削除</button>
+            {note.hasAudio && !editing && (note.status === "done" || note.status === "error") && (
+              <select
+                className="btn" defaultValue="" title="文字起こしをやり直す（幻覚ループ・言語ミス時）"
+                onChange={(e) => { if (e.target.value) { void redo(e.target.value); e.target.value = ""; } }}
+              >
+                <option value="" disabled>🔁 再文字起こし…</option>
+                <option value="ja">日本語で</option>
+                <option value="en">英語で</option>
+                <option value="auto">自動判定で</option>
+              </select>
+            )}
             <div className="spacer" />
             {editing ? (
               <>
