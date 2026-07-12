@@ -20,7 +20,7 @@ import { exportNoteFiles, inferCourseNotebook, removeExportedFiles } from "./not
  */
 
 const AUDIO_SUBDIR = "audio";
-const AUDIO_EXT = new Set([".mp3", ".m4a", ".wav", ".ogg", ".opus", ".flac", ".aac", ".webm", ".mp4"]);
+export const AUDIO_EXT = new Set([".mp3", ".m4a", ".wav", ".ogg", ".opus", ".flac", ".aac", ".webm", ".mp4"]);
 
 export interface NoteAudioView {
   id: string;
@@ -186,23 +186,36 @@ function runWhisperx(audioAbs: string, outDir: string, language = "ja"): Promise
   });
 }
 
-function summarizePrompt(transcript: string, title: string, eventLabel: string | null): string {
+function summarizePrompt(
+  transcript: string,
+  title: string,
+  eventLabel: string | null,
+  materialsText?: string | null,
+): string {
+  const hasT = !!transcript.trim();
+  const hasM = !!materialsText?.trim();
   return [
-    "以下は講義・会議などの音声を機械的に文字起こししたテキストです（誤認識を含みます）。",
-    "「===== 音源N: … =====」の見出しがある場合は複数の録音を順に並べた1セットです（例: 前半/後半、講義+上映動画）。全体をひとつの内容として扱ってください。",
+    hasT
+      ? "以下は講義・会議などの音声を機械的に文字起こししたテキストです（誤認識を含みます）。"
+      : "以下は講義・活動の配布資料から機械的に抽出したテキストです（レイアウト崩れを含みます）。",
+    hasT
+      ? "「===== 音源N: … =====」の見出しがある場合は複数の録音を順に並べた1セットです（例: 前半/後半、講義+上映動画）。全体をひとつの内容として扱ってください。"
+      : "",
+    hasT && hasM
+      ? "「# 配布資料」以下は同じ回の配布資料（スライド等）の抽出テキストです。文字起こしの用語補正と内容の補完に使ってください。"
+      : "",
     "内容を整理して、後から見返せる Markdown ノートを日本語で作ってください。",
     "構成: 冒頭に3行以内の要約。次に「## トピック」ごとの整理（見出し＋箇条書き）。",
     "課題・宿題・締切・約束事があれば必ず「## TODO・締切」節に抜き出す。",
     "登場した人名・固有名詞は「## 人物・用語」節に一行ずつ（分かる範囲の説明付き）。",
-    "誤認識と思われる箇所は文脈から自然に補正してよい（創作はしない）。",
+    hasT ? "誤認識と思われる箇所は文脈から自然に補正してよい（創作はしない）。" : "資料に無い内容を創作しないこと。",
     "ツールは一切使わないこと。ファイルへの保存も試みないこと（保存はこちらで行う）。",
     "Markdown 本文だけを出力すること（前置き・断り書き・コードフェンス不要）。",
     "",
     `# タイトル: ${title}`,
     eventLabel ? `# 関連する予定: ${eventLabel}` : "",
-    "",
-    "# 文字起こし",
-    transcript.slice(0, 60_000), // keep the prompt bounded
+    ...(hasM ? ["", "# 配布資料", materialsText!.slice(0, 60_000)] : []),
+    ...(hasT ? ["", "# 文字起こし", transcript.slice(0, 60_000)] : []), // keep the prompt bounded
   ].filter(Boolean).join("\n");
 }
 
@@ -291,39 +304,65 @@ async function pipeline(noteId: string, title: string, eventLabel: string | null
       return;
     }
     const transcript = combineTranscripts(rows).slice(0, 200_000);
-    setStatus(noteId, "summarizing", { transcript });
-
-    // claudeの5h枠が薄い時は codex → copilot → agy に自動で逃がす（要約はどれでも可）
-    const res = await runAgentAuto(summarizePrompt(transcript, title, eventLabel), {
-      jobKind: "note-summary",
-      timeoutMs: 600_000,
-    });
-    if (!res.ok) {
-      // keep the transcript — the note is still useful without the summary
-      setStatus(noteId, "error", { error: `要約失敗: ${res.error}`, jobId: res.jobId });
-      return;
-    }
-    const content = res.text.trim().slice(0, 200_000);
-    // 分類も予定も無いノートはタイトルから授業を推定（「地震防災0711」→講義: 地震防災）。
-    // これが決まると OWUI の棚もフォルダ書き出し先も授業に揃う。
-    const nb = notebook ?? (await inferCourseNotebook(title).catch(() => null));
-    setStatus(noteId, "done", { content, jobId: res.jobId, notebook: nb });
-    // NotebookLM layer: make the note queryable from the Open WebUI chat
-    void pushNoteToOwui({ id: noteId, title, content, transcript }, nb).then((fid) => {
-      if (fid) db.update(notes).set({ owuiFileId: fid }).where(eq(notes.id, noteId)).run();
-    });
-    // フォルダ集約: 要約md+全文txt を OneDrive の授業資料フォルダ（回別があればそこ）へ
-    const done = db.select().from(notes).where(eq(notes.id, noteId)).get();
-    if (done)
-      void exportNoteFiles(done, eventStartMs(done.eventKey)).catch((e) =>
-        console.log(`[notes-export] failed: ${e}`),
-      );
+    await summarizeAndPublish(noteId, title, eventLabel, notebook, transcript);
   } catch (e) {
     setStatus(noteId, "error", { error: String(e).slice(0, 500) });
   } finally {
     inFlight.delete(noteId);
     if (rerun.delete(noteId)) void pipeline(noteId, title, eventLabel, notebook);
   }
+}
+
+/**
+ * 要約→公開の後段（音声パイプラインとフォルダノート共用）: 文字起こし（無くても
+ * 可）と、フォルダ紐付きノートなら同じフォルダの配布資料テキストを合わせて
+ * Markdownノートを生成し、done化 → OWUI登録 → フォルダ書き出しまで行う。
+ */
+export async function summarizeAndPublish(
+  noteId: string,
+  title: string,
+  eventLabel: string | null,
+  notebook: string | null,
+  transcript: string,
+): Promise<void> {
+  setStatus(noteId, "summarizing", transcript ? { transcript } : {});
+  const materialsText = await import("./folder-notes")
+    .then((m) => m.folderMaterialsText(noteId))
+    .catch(() => null);
+  if (!transcript.trim() && !materialsText?.trim()) {
+    setStatus(noteId, "error", { error: "要約する素材がありません（文字起こしも資料テキストも空）" });
+    return;
+  }
+  // claudeの5h枠が薄い時は codex → copilot → agy に自動で逃がす（要約はどれでも可）
+  const res = await runAgentAuto(summarizePrompt(transcript, title, eventLabel, materialsText), {
+    jobKind: "note-summary",
+    timeoutMs: 600_000,
+  });
+  if (!res.ok) {
+    // keep the transcript — the note is still useful without the summary
+    setStatus(noteId, "error", { error: `要約失敗: ${res.error}`, jobId: res.jobId });
+    return;
+  }
+  const content = res.text.trim().slice(0, 200_000);
+  // 分類も予定も無いノートはタイトルから授業を推定（「地震防災0711」→講義: 地震防災）。
+  // これが決まると OWUI の棚もフォルダ書き出し先も授業に揃う。
+  const nb = notebook ?? (await inferCourseNotebook(title).catch(() => null));
+  setStatus(noteId, "done", { content, jobId: res.jobId, notebook: nb });
+  // NotebookLM layer: make the note queryable from the Open WebUI chat
+  void pushNoteToOwui({ id: noteId, title, content, transcript: transcript || null }, nb).then((fid) => {
+    if (fid) db.update(notes).set({ owuiFileId: fid }).where(eq(notes.id, noteId)).run();
+  });
+  // フォルダ集約: 要約md+全文txt を OneDrive の授業資料フォルダ（回別があればそこ）へ
+  const done = db.select().from(notes).where(eq(notes.id, noteId)).get();
+  if (done)
+    void exportNoteFiles(done, eventStartMs(done.eventKey)).catch((e) =>
+      console.log(`[notes-export] failed: ${e}`),
+    );
+}
+
+/** フォルダ監視が文字起こし中のCPU競合を避けるための実行中パイプライン数。 */
+export function inFlightCount(): number {
+  return inFlight.size;
 }
 
 export interface AudioSource {

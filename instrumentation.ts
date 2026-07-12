@@ -7,4 +7,6 @@ export async function register() {
   startReminderLoop();
   const { startNudgeLoop } = await import("./lib/nudges");
   startNudgeLoop();
+  const { startFolderNotesLoop } = await import("./lib/folder-notes");
+  startFolderNotesLoop();
 }

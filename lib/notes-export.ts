@@ -63,6 +63,26 @@ async function mkdirForce(dir: string): Promise<void> {
   }
 }
 
+/**
+ * フォルダ駆動ノート（lib/folder-notes.ts）は生成元フォルダに紐付いている —
+ * 書き出し先はタイトル・日付からの推定ではなく、そのフォルダに固定する。
+ * 台帳 data/folder-notes.json を直接読む（相互importを避けるため）。
+ */
+function folderBoundDir(noteId: string): string | null {
+  if (!env.notesExportDir) return null;
+  try {
+    const led = JSON.parse(
+      fsSync.readFileSync(path.join(path.resolve(env.dataDir), "folder-notes.json"), "utf8"),
+    ) as { folders?: Record<string, { noteId?: string | null }> };
+    for (const [rel, e] of Object.entries(led.folders ?? {})) {
+      if (e?.noteId !== noteId) continue;
+      const abs = path.join(env.notesExportDir, rel);
+      return fsSync.existsSync(abs) ? abs : null;
+    }
+  } catch { /* 台帳なし */ }
+  return null;
+}
+
 /** owui-sync 用: エクスポート済みファイルの絶対パス集合。 */
 export function exportedPathsSync(): Set<string> {
   try {
@@ -209,7 +229,7 @@ export interface ExportableNote {
 export async function exportNoteFiles(note: ExportableNote, lectureDateMs?: number | null): Promise<void> {
   // 講義日: 予定の開始日 > タイトル中の日付(0703, 7/2等) > ノート作成日
   const dateMs = lectureDateMs ?? dateFromTitle(note.title, note.createdAt) ?? note.createdAt;
-  const dir = await resolveNoteDir(note.notebook, dateMs);
+  const dir = folderBoundDir(note.id) ?? (await resolveNoteDir(note.notebook, dateMs));
   if (!dir) return;
 
   const d = new Date(dateMs ?? Date.now());
