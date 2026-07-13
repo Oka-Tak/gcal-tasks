@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Dock, MobileTabs } from "../nav";
@@ -21,7 +21,27 @@ export type NoteView = {
   transcript: string | null; status: string; error: string | null;
   hasAudio: boolean; audios: NoteAudioView[]; notebook: string | null;
   createdAt: number | null; updatedAt: number | null;
+  sources?: number; folder?: string | null; // 一覧APIのみ: 紐付きフォルダのソース数
 };
+
+/* NotebookLM風カード: 授業(notebook)ごとに決まった絵文字と色相 */
+const NB_EMOJI = ["📚", "🎓", "📊", "🧠", "🤖", "⚙️", "🔬", "🧮", "🌏", "📝", "💡", "🏛️", "📐", "🎯", "🎨", "🗄️", "📡", "⚖️", "🚀", "💬"];
+function nbHash(s: string): number {
+  let h = 0;
+  for (const c of s) h = (h * 31 + (c.codePointAt(0) ?? 0)) >>> 0;
+  return h;
+}
+function nbEmoji(n: NoteView): string {
+  if (n.status === "error") return "⚠️";
+  return NB_EMOJI[nbHash(n.notebook ?? n.title) % NB_EMOJI.length];
+}
+function nbTint(n: NoteView): CSSProperties {
+  const h = nbHash(n.notebook ?? n.title) % 360;
+  return {
+    background: `linear-gradient(135deg, hsl(${h} 32% 17%), hsl(${h} 26% 13%))`,
+    borderColor: `hsl(${h} 30% 28%)`,
+  };
+}
 
 const LANG_LABEL: Record<string, string> = { ja: "日本語", en: "英語", auto: "自動判定" };
 
@@ -754,18 +774,15 @@ export default function NotesClient() {
           ノート一覧{filter && <> — {filter.replace(/^講義:\s*/, "")} <button className="btn" onClick={() => setFilter(null)}>✕</button></>}
         </h2>
         {items.length === 0 && <p className="hint">まだノートがありません。音声を投げるか、予定の詳細から作れます。</p>}
-        <div className="loglist">
+        <div className="notegrid">
           {items.filter((n) => !filter || n.notebook === filter).map((n) => (
-            <button key={n.id} className="logcard notecard" onClick={() => setOpen(n.id)}>
-              <div className="lk">{n.hasAudio ? "🎙" : "📝"}</div>
-              <div className="lmain">
-                <div className="lt">{n.title}</div>
-                <div className="lmeta">
-                  {fmtDate(n.createdAt)}
-                  {n.status !== "done" && ` ・ ${STATUS_LABEL[n.status] ?? n.status}`}
-                  {n.eventKey && " ・ 📅 予定に紐付き"}
-                </div>
-                {n.status === "error" && <div className="lnote" style={{ color: "var(--danger)" }}>{n.error}</div>}
+            <button key={n.id} className="nbcard" style={nbTint(n)} onClick={() => setOpen(n.id)}
+              title={n.folder ? `📁 ${n.folder}` : n.notebook ?? ""}>
+              <div className="nbemoji">{nbEmoji(n)}</div>
+              <div className="nbtitle">{n.title}</div>
+              <div className="nbmeta">
+                {fmtDate(n.createdAt)} ・ ソース{n.sources ?? (n.hasAudio ? n.audios.length : 0)}個
+                {n.status !== "done" && <span className="nbstat"> ・ {STATUS_LABEL[n.status] ?? n.status}</span>}
               </div>
             </button>
           ))}

@@ -1,6 +1,7 @@
 import { type NextRequest } from "next/server";
 import { auth } from "@/auth";
 import { createManualNote, getNote, listNotes, softDeleteNote, updateNote } from "@/lib/notes";
+import { noteSourceCounts } from "@/lib/folder-notes";
 
 export const runtime = "nodejs";
 
@@ -21,7 +22,14 @@ export async function GET(req: NextRequest) {
       ? Response.json({ note })
       : Response.json({ detail: "not found" }, { status: 404 });
   }
-  return Response.json({ notes: listNotes(q.get("eventKey")) });
+  // NotebookLM風カード用: 紐付いたフォルダのソース数（資料+音源）とフォルダ名を添える
+  const counts = await noteSourceCounts().catch(() => ({}) as Awaited<ReturnType<typeof noteSourceCounts>>);
+  const notes = listNotes(q.get("eventKey")).map((n) => ({
+    ...n,
+    sources: counts[n.id]?.sources ?? n.audios.length,
+    folder: counts[n.id]?.folder ?? null,
+  }));
+  return Response.json({ notes });
 }
 
 /** Create a manual (no-audio) note. Audio goes to /api/notes/ingest. */

@@ -8,7 +8,25 @@ import { events, noteAudios, notes } from "./db/schema";
 import { env } from "./env";
 import { runAgent, runAgentAuto } from "./agent";
 import { pushNoteToOwui } from "./owui";
-import { exportNoteFiles, inferCourseNotebook, removeExportedFiles } from "./notes-export";
+import { dateFromTitle, exportNoteFiles, inferCourseNotebook, removeExportedFiles, resolveNoteDir } from "./notes-export";
+
+/**
+ * フォルダ⇔ノートの1対1対応: ノート作成時点で置き先フォルダを解決して
+ * folder-notes 台帳に紐付ける。以後そのフォルダへの資料・音声の追加が
+ * このノートを更新し、要約にはフォルダの配布資料テキストが入る。
+ * フォルダに既に別ノートが居る場合は紐付けない（1対1を壊さない）。
+ */
+async function bindToResolvedFolder(noteId: string, notebook: string | null, eventKey: string | null, title: string | null): Promise<void> {
+  try {
+    const nb = notebook ?? (await inferCourseNotebook(title).catch(() => null));
+    const dir = await resolveNoteDir(nb, eventStartMs(eventKey) ?? dateFromTitle(title, Date.now()));
+    if (!dir) return;
+    const { bindNoteToFolder } = await import("./folder-notes"); // 相互import回避
+    await bindNoteToFolder(noteId, dir);
+  } catch (e) {
+    console.log(`[notes] folder bind failed (${noteId}): ${String(e).slice(0, 120)}`);
+  }
+}
 
 /**
  * NotebookLM-ish notes: audio in → whisperX transcript (local CPU) → agent
@@ -422,8 +440,11 @@ export async function ingestAudioNote(opts: {
     throw e;
   }
 
+  // フォルダ⇔ノート1対1: 先に紐付けてから流す（要約がフォルダの資料テキストを拾える）
+  const nb = notebookFor(opts.notebook, opts.eventKey);
+  await bindToResolvedFolder(id, nb, opts.eventKey ?? null, opts.title || opts.files[0].filename);
   // detached — the UI polls /api/notes for status
-  void pipeline(id, opts.title || opts.files[0].filename, opts.eventLabel ?? null, notebookFor(opts.notebook, opts.eventKey));
+  void pipeline(id, opts.title || opts.files[0].filename, opts.eventLabel ?? null, nb);
   return id;
 }
 
@@ -456,6 +477,7 @@ export function createManualNote(opts: { title: string; content?: string; eventK
     .run();
   const nb = notebookFor(opts.notebook, opts.eventKey);
   if (nb) db.update(notes).set({ notebook: nb }).where(eq(notes.id, id)).run();
+  void bindToResolvedFolder(id, nb, opts.eventKey ?? null, opts.title);
   if (opts.content) {
     void pushNoteToOwui(
       { id, title: opts.title, content: opts.content, transcript: null },

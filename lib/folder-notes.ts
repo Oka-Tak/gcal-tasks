@@ -267,6 +267,24 @@ export async function baselineFolders(rels: string[]): Promise<void> {
   await saveLedger(ledger);
 }
 
+/**
+ * ノート一覧カード用: noteId → {sources: フォルダ内の資料+音源数, folder: 相対パス}。
+ * NotebookLM的な「ソースN個」表示のため。未紐付けノートは載らない。
+ */
+export async function noteSourceCounts(): Promise<Record<string, { sources: number; folder: string }>> {
+  const root = env.notesExportDir;
+  const out: Record<string, { sources: number; folder: string }> = {};
+  if (!root) return out;
+  const ledger = await loadLedger();
+  const exported = exportedPathsSync();
+  for (const [rel, e] of Object.entries(ledger.folders)) {
+    if (!e.noteId || out[e.noteId]) continue;
+    const cur = await collectFiles(path.join(root, rel), exported);
+    out[e.noteId] = { sources: cur.audio.length + cur.materials.length, folder: rel };
+  }
+  return out;
+}
+
 /** ノートに紐付いたフォルダの絶対パス（未紐付けは null）。資料追加の置き先解決用。 */
 export function folderOfNoteSync(noteId: string): string | null {
   const root = env.notesExportDir;
@@ -307,6 +325,10 @@ export async function scanFolderNotes(): Promise<number> {
       Object.keys(entry.files).some((n) => MATERIAL_EXT.has(path.extname(n).toLowerCase()) && !cur.stamps[n]);
     if (newAudio.length === 0 && !matChanged) continue;
     if (actions >= MAX_ACTIONS_PER_TICK) continue; // 残りは次のtickで
+
+    // フォルダ⇔ノートは1対1: このフォルダに書き出し済みのノートが居れば
+    // （UI経由の録音ノート等）、新規作成せずそれを採用して育てる
+    if (!entry.noteId) entry.noteId = linkedNoteId(abs);
 
     if (!entry.noteId) {
       // フォルダにソースが現れた → ノート新規作成（音声があれば文字起こしから）
