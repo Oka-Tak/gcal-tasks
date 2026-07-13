@@ -29,7 +29,7 @@ import { dateFromFolderName, occurrenceForDate } from "./course-sessions";
 
 const LEDGER = () => path.join(path.resolve(env.dataDir), "folder-notes.json");
 const MATERIAL_EXT = new Set([".pdf", ".pptx", ".docx", ".xlsx", ".csv", ".md", ".txt"]);
-const SELF_EXTRACT = new Set([".pdf", ".pptx", ".xlsx", ".csv"]); // extract-text.py対応形式
+const SELF_EXTRACT = new Set([".pdf", ".pptx", ".xlsx", ".csv", ".docx"]); // extract-text.py対応形式
 const EXTRACT_PY = path.join(process.cwd(), "scripts", "extract-text.py");
 const EXTRACT_PYTHON =
   process.env.KAIROS_EXTRACT_PYTHON ??
@@ -366,8 +366,8 @@ export async function scanFolderNotes(): Promise<number> {
 
 /**
  * ノートに紐付いたフォルダの配布資料テキスト（要約プロンプト用）。
- * pdf/pptx/xlsx/csv は extract-text.py、md/txt は生読み。.docx は抽出手段が
- * 無いので飛ばす（RAG側ではOWUIが拾う）。フォルダ紐付きでなければ null。
+ * pdf/pptx/xlsx/csv/docx は extract-text.py、md/txt は生読み。
+ * フォルダ紐付きでなければ null。
  */
 export async function folderMaterialsText(noteId: string): Promise<string | null> {
   const root = env.notesExportDir;

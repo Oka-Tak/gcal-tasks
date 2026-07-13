@@ -82,6 +82,22 @@ def extract_xlsx(path: str) -> str:
     return "\n\n".join(parts)
 
 
+def extract_docx(path: str) -> str:
+    from docx import Document
+
+    doc = Document(path)
+    parts = []
+    for p in doc.paragraphs:
+        if p.text.strip():
+            parts.append(p.text)
+    for table in doc.tables:
+        for row in table.rows:
+            cells = [c.text.strip() for c in row.cells if c.text.strip()]
+            if cells:
+                parts.append("\t".join(cells))
+    return "\n".join(parts)
+
+
 def extract_csv(path: str) -> str:
     import csv
 
@@ -104,6 +120,7 @@ EXTRACTORS = {
     ".pdf": extract_pdf,
     ".xlsx": extract_xlsx,
     ".csv": extract_csv,
+    ".docx": extract_docx,  # folder-notes の資料テキスト用（OWUIはdocxを生で扱える）
 }
 
 

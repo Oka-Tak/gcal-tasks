@@ -365,7 +365,7 @@ export async function summarizeAndPublish(
   // 分類も予定も無いノートはタイトルから授業を推定（「地震防災0711」→講義: 地震防災）。
   // これが決まると OWUI の棚もフォルダ書き出し先も授業に揃う。
   const nb = notebook ?? (await inferCourseNotebook(title).catch(() => null));
-  setStatus(noteId, "done", { content, jobId: res.jobId, notebook: nb });
+  setStatus(noteId, "done", { content, jobId: res.jobId, notebook: nb, error: null });
   // NotebookLM layer: make the note queryable from the Open WebUI chat
   void pushNoteToOwui({ id: noteId, title, content, transcript: transcript || null }, nb).then((fid) => {
     if (fid) db.update(notes).set({ owuiFileId: fid }).where(eq(notes.id, noteId)).run();
