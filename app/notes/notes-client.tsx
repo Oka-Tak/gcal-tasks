@@ -246,6 +246,28 @@ function NoteModal({ id, onClose, onChanged }: {
     }
   };
 
+  // 資料の追加（ノートのフォルダに保存 → RAG登録 → 資料込みで再要約）
+  const matRef = useRef<HTMLInputElement>(null);
+  const [matBusy, setMatBusy] = useState(false);
+  const addMaterials = async (list: FileList | null) => {
+    if (!list || list.length === 0) return;
+    setMatBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("id", id);
+      for (const f of Array.from(list)) fd.append("file", f);
+      const r = await fetch("/api/notes/material", { method: "POST", body: fd });
+      if (!r.ok) throw new Error(await r.text());
+      if (matRef.current) matRef.current.value = "";
+      await load();
+      onChanged();
+    } catch (e) {
+      setErr(String(e).slice(0, 200));
+    } finally {
+      setMatBusy(false);
+    }
+  };
+
   return (
     <div className="scrim" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal wide">
@@ -346,6 +368,12 @@ function NoteModal({ id, onClose, onChanged }: {
                 <LangSelect value={addLang} onChange={setAddLang} title="追加する音源の言語" />
                 <button className="btn" title="このノートに音源を追加（結合して要約し直す）"
                   onClick={() => addRef.current?.click()}>＋音源追加</button>
+                <input ref={matRef} type="file" multiple hidden
+                  accept=".pdf,.pptx,.docx,.xlsx,.csv,.md,.txt,.html"
+                  onChange={(e) => void addMaterials(e.target.files)} />
+                <button className="btn" disabled={matBusy}
+                  title="このノートに資料(pdf/pptx等)を追加 — フォルダに保存し、資料の内容も踏まえて要約し直します"
+                  onClick={() => matRef.current?.click()}>{matBusy ? "追加中…" : "＋資料追加"}</button>
               </>
             )}
             <div className="spacer" />
@@ -372,74 +400,191 @@ type Material = { id: string; notebook: string; filename: string; size: number |
 
 /* ---------------------------------------------------------- course folders */
 type FolderInfo = { folder: string; notebook: string; files: number; notes: number };
-type FolderFile = { name: string; sub: string; size: number; mtimeMs: number };
+
+type SessionRow = {
+  n: number | null; ymd: string; dateMs: number; future: boolean;
+  folder: string | null; files: string[];
+  noteId: string | null; noteStatus: string | null; noteTitle: string | null;
+};
+type CourseViewResp = {
+  course: string; sessions: SessionRow[]; looseFiles: string[];
+  otherFolders: { name: string; files: number }[];
+};
+
+const WDAY = ["日", "月", "火", "水", "木", "金", "土"];
+function fmtYmdShort(ymd: string): string {
+  const d = new Date(`${ymd}T00:00:00`);
+  return `${d.getMonth() + 1}/${d.getDate()}(${WDAY[d.getDay()]})`;
+}
 
 /**
- * OneDrive「授業資料」の授業フォルダ一覧 — ここが各授業の棚（資料+ノート+
- * 文字起こしが同居、OWUIナレッジ「講義: X」と対応）。クリックでノートを絞り込み、
- * 中身のファイルも見られる。
+ * 授業ビュー: カレンダーから割り出した「第N回=何月何日」に、その回のフォルダ・
+ * 資料・ノートを対応付ける。資料がある回はその場でノート生成でき、フォルダに
+ * 後からファイルを置けば5分毎のスキャンがノートを自動更新する。
  */
-function CourseFoldersCard({ selected, onSelect }: {
+function CourseFoldersCard({ selected, onSelect, onOpenNote, onNotesChanged }: {
   selected: string | null; onSelect: (notebook: string | null) => void;
+  onOpenNote: (noteId: string) => void; onNotesChanged: () => void;
 }) {
   const [items, setItems] = useState<FolderInfo[]>([]);
-  const [openFolder, setOpenFolder] = useState<string | null>(null);
-  const [files, setFiles] = useState<FolderFile[] | null>(null);
+  const [openCourse, setOpenCourse] = useState<string | null>(null);
+  const [view, setView] = useState<CourseViewResp | null>(null);
+  const [busy, setBusy] = useState<string | null>(null); // 実行中アクションのymd
+  const [msg, setMsg] = useState<string | null>(null);
 
   useEffect(() => {
     void api("GET", "/api/notebooks").then((r) => setItems(r.notebooks || [])).catch(() => {});
   }, []);
 
+  const loadView = useCallback(async (course: string) => {
+    try {
+      setView(await api("GET", `/api/notebooks?course=${encodeURIComponent(course)}`));
+    } catch {
+      setView({ course, sessions: [], looseFiles: [], otherFolders: [] });
+    }
+  }, []);
+
+  // 作成中のノートがある間は自動更新
+  useEffect(() => {
+    if (!openCourse || !view?.sessions.some((s) => s.noteStatus === "transcribing" || s.noteStatus === "summarizing")) return;
+    const t = setInterval(() => void loadView(openCourse), 8000);
+    return () => clearInterval(t);
+  }, [openCourse, view, loadView]);
+
   const toggle = async (f: FolderInfo) => {
-    if (openFolder === f.folder) {
-      setOpenFolder(null);
+    if (openCourse === f.folder) {
+      setOpenCourse(null);
+      setView(null);
       onSelect(null);
       return;
     }
-    setOpenFolder(f.folder);
-    setFiles(null);
+    setOpenCourse(f.folder);
+    setView(null);
+    setMsg(null);
     onSelect(f.notebook);
+    await loadView(f.folder);
+  };
+
+  const createNote = async (s: SessionRow) => {
+    if (!openCourse) return;
+    setBusy(s.ymd);
+    setMsg(null);
     try {
-      const r = await api("GET", `/api/notebooks?folder=${encodeURIComponent(f.folder)}`);
-      setFiles(r.files || []);
-    } catch {
-      setFiles([]);
+      await api("POST", "/api/notebooks", { course: openCourse, ymd: s.ymd });
+      await loadView(openCourse);
+      onNotesChanged();
+    } catch (e) {
+      setMsg(String((e as Error).message ?? e).slice(0, 200));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const prepareFolder = async (s: SessionRow) => {
+    if (!openCourse) return;
+    setBusy(s.ymd);
+    try {
+      const r = await api("POST", "/api/notebooks", { course: openCourse, ymd: s.ymd, prepare: true });
+      setMsg(`📁 ${r.folder} を作成しました。資料や録音をここに置くと自動でノート化されます`);
+      await loadView(openCourse);
+    } catch (e) {
+      setMsg(String((e as Error).message ?? e).slice(0, 200));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const bulk = async () => {
+    if (!openCourse) return;
+    setBusy("bulk");
+    try {
+      const r = await api("POST", "/api/notebooks", { course: openCourse, bulk: true });
+      setMsg(r.queued > 0
+        ? `${r.queued}回分をキューに入れました（5分毎に2件ずつ自動生成されます）`
+        : "対象なし（資料がありノート未作成の回はありません）");
+    } catch (e) {
+      setMsg(String((e as Error).message ?? e).slice(0, 200));
+    } finally {
+      setBusy(null);
     }
   };
 
   if (items.length === 0) return null;
+  const creatable = view?.sessions.filter((s) => !s.future && s.files.length > 0 && !s.noteId).length ?? 0;
   return (
     <div className="card">
-      <h3>📚 授業フォルダ（OneDrive: 授業資料）</h3>
+      <h3>📚 授業（OneDrive: 授業資料 × カレンダー）</h3>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
         {items.map((f) => (
           <button key={f.folder}
             className={`btn${selected === f.notebook ? " btn-primary" : ""}`}
             onClick={() => void toggle(f)}
-            title={`資料${f.files}件 / ノート${f.notes}件 — クリックでノート絞り込み+中身表示`}>
-            {f.folder} <span className="hint" style={{ margin: 0 }}>{f.files}📄{f.notes > 0 ? ` ${f.notes}🎙` : ""}</span>
+            title={`資料${f.files}件 / ノート${f.notes}件`}>
+            {f.folder} <span className="hint" style={{ margin: 0 }}>{f.files}📄{f.notes > 0 ? ` ${f.notes}📝` : ""}</span>
           </button>
         ))}
       </div>
-      {openFolder && (
+      {openCourse && (
         <div style={{ marginTop: 8 }}>
-          {files === null ? <p className="hint">読み込み中…</p> : (
-            <div style={{ maxHeight: 220, overflowY: "auto" }}>
-              {files.length === 0 && <p className="hint">（ファイルなし）</p>}
-              {files.map((x, i) => (
-                <div key={i} style={{ display: "flex", gap: 8, alignItems: "baseline", padding: "1px 0" }}>
-                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {x.sub ? `${x.sub}/` : ""}{x.name}
-                  </span>
-                  <span className="lmeta">{fmtSize(x.size)}</span>
-                </div>
-              ))}
-            </div>
+          {view === null ? <p className="hint">読み込み中…</p> : (
+            <>
+              {view.sessions.length === 0 && <p className="hint">カレンダーにこの授業の予定が見つかりません。</p>}
+              <div style={{ maxHeight: 320, overflowY: "auto" }}>
+                {view.sessions.map((s) => (
+                  <div key={s.ymd}
+                    style={{ display: "flex", gap: 8, alignItems: "center", padding: "2px 0", opacity: s.future ? 0.5 : 1 }}>
+                    <span style={{ width: 52, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                      {s.n != null ? `第${s.n}回` : "—"}
+                    </span>
+                    <span style={{ width: 64 }}>{fmtYmdShort(s.ymd)}</span>
+                    <span className="hint" style={{ margin: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                      title={s.files.join("\n") || (s.folder ? "（ファイルなし）" : "（フォルダ未作成）")}>
+                      {s.files.length > 0 ? `📄${s.files.length}件` : s.folder ? "空" : ""}
+                      {s.files.length > 0 && ` — ${s.files.join(" / ")}`}
+                    </span>
+                    {s.noteId ? (
+                      <button className="btn" onClick={() => onOpenNote(s.noteId!)}
+                        title={s.noteTitle ?? ""}>
+                        {s.noteStatus === "done" ? "📝開く"
+                          : s.noteStatus === "error" ? "⚠開く"
+                          : "⏳作成中"}
+                      </button>
+                    ) : s.future ? null : s.files.length > 0 ? (
+                      <button className="btn" disabled={busy != null}
+                        title="この回の資料・録音からノートを生成"
+                        onClick={() => void createNote(s)}>
+                        {busy === s.ymd ? "…" : "ノート作成"}
+                      </button>
+                    ) : !s.folder ? (
+                      <button className="btn" disabled={busy != null}
+                        title="この回のフォルダを作る（あとで資料や録音を置くだけで自動ノート化）"
+                        onClick={() => void prepareFolder(s)}>
+                        {busy === s.ymd ? "…" : "📁"}
+                      </button>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+              {(view.looseFiles.length > 0 || view.otherFolders.length > 0) && (
+                <p className="hint" style={{ margin: "6px 0 0" }}
+                  title={[...view.looseFiles, ...view.otherFolders.map((o) => `${o.name}/`)].join("\n")}>
+                  回に紐付かない: {view.looseFiles.length > 0 && `未整理ファイル${view.looseFiles.length}件 `}
+                  {view.otherFolders.map((o) => `📁${o.name}(${o.files})`).join(" ")}
+                </p>
+              )}
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6 }}>
+                {creatable > 1 && (
+                  <button className="btn" disabled={busy != null} onClick={() => void bulk()}>
+                    {busy === "bulk" ? "…" : `資料がある${creatable}回分をまとめてノート化`}
+                  </button>
+                )}
+                <span className="hint" style={{ margin: 0 }}>
+                  チャット(OWUI)では「#」→「講義: {openCourse}」でこの授業だけを参照できます。
+                </span>
+              </div>
+              {msg && <p className="hint" style={{ margin: "4px 0 0" }}>{msg}</p>}
+            </>
           )}
-          <p className="hint" style={{ margin: "6px 0 0" }}>
-            音声ノートの要約・全文文字起こしもこのフォルダに自動保存され、Windows側にも同期されます。
-            チャット(OWUI)では「#」→「講義: {openFolder}」でこの授業だけを参照できます。
-          </p>
         </div>
       )}
     </div>
@@ -602,7 +747,8 @@ export default function NotesClient() {
       <div className="page">
         {err && <p className="errline">{err}</p>}
         <AudioUpload onStarted={() => void reload()} />
-        <CourseFoldersCard selected={filter} onSelect={setFilter} />
+        <CourseFoldersCard selected={filter} onSelect={setFilter}
+          onOpenNote={setOpen} onNotesChanged={() => void reload()} />
         <MaterialsCard />
         <h2 className="sect">
           ノート一覧{filter && <> — {filter.replace(/^講義:\s*/, "")} <button className="btn" onClick={() => setFilter(null)}>✕</button></>}

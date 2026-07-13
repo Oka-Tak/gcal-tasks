@@ -6,13 +6,19 @@ import { auth } from "@/auth";
 import { db } from "@/lib/db";
 import { notes } from "@/lib/db/schema";
 import { env } from "@/lib/env";
+import { courseView } from "@/lib/course-sessions";
+import { createNoteForFolder, queueFolderNotes } from "@/lib/folder-notes";
 
 export const runtime = "nodejs";
 
 /**
- * 授業フォルダ（OneDrive: 授業資料/<授業>）をノート欄のベースとして一覧する。
- * GET             → { notebooks: [{folder, notebook, files, notes}] }
- * GET ?folder=X   → { files: [{name, sub, size, mtimeMs}] } （そのフォルダの中身）
+ * ノート欄の授業ビュー。
+ * GET            → { notebooks: [{folder, notebook, files, notes}] } 授業チップ用
+ * GET ?course=X  → 回別ビュー（カレンダー由来の第N回 + フォルダ・ファイル・ノート対応）
+ * POST {course, ymd}                → その回のフォルダからノートを即時作成
+ * POST {course, ymd, prepare:true}  → その回のフォルダだけ作成（資料置き場の準備）
+ * POST {course, bulk:true}          → 資料があるのにノートが無い回を一括キュー
+ *                                     （5分毎スキャンが2件/回のペースで消化）
  */
 
 async function* walk(dir: string): AsyncGenerator<string> {
@@ -36,25 +42,8 @@ export async function GET(req: NextRequest) {
   const root = env.notesExportDir;
   if (!root) return Response.json({ notebooks: [] });
 
-  const folder = req.nextUrl.searchParams.get("folder");
-  if (folder) {
-    // フォルダの中身（1授業分）。パストラバーサル防止に名前だけ受ける。
-    const dir = path.join(root, path.basename(folder));
-    const files: { name: string; sub: string; size: number; mtimeMs: number }[] = [];
-    for await (const f of walk(dir)) {
-      const st = await fs.stat(f).catch(() => null);
-      if (!st) continue;
-      const rel = path.relative(dir, f);
-      files.push({
-        name: path.basename(f),
-        sub: path.dirname(rel) === "." ? "" : path.dirname(rel),
-        size: st.size,
-        mtimeMs: st.mtimeMs,
-      });
-    }
-    files.sort((a, b) => b.mtimeMs - a.mtimeMs);
-    return Response.json({ files: files.slice(0, 500) });
-  }
+  const course = req.nextUrl.searchParams.get("course");
+  if (course) return Response.json(await courseView(path.basename(course)));
 
   // ノート数（notebook 単位）
   const noteCounts = new Map<string, number>();
@@ -77,4 +66,42 @@ export async function GET(req: NextRequest) {
   }
   out.sort((a, b) => b.notes - a.notes || b.files - a.files);
   return Response.json({ notebooks: out });
+}
+
+export async function POST(req: NextRequest) {
+  const session = await auth();
+  if (!session?.user) return Response.json({ detail: "unauthenticated" }, { status: 401 });
+  const root = env.notesExportDir;
+  if (!root) return Response.json({ detail: "KAIROS_NOTES_EXPORT 未設定" }, { status: 400 });
+  const body = (await req.json().catch(() => null)) as
+    | { course?: string; ymd?: string; prepare?: boolean; bulk?: boolean }
+    | null;
+  const course = path.basename((body?.course ?? "").trim());
+  if (!course) return Response.json({ detail: "course が必要です" }, { status: 400 });
+
+  if (body?.bulk) {
+    const view = await courseView(course);
+    const rels = view.sessions
+      .filter((s) => !s.future && s.folder && s.files.length > 0 && !s.noteId)
+      .map((s) => path.join(course, s.folder!));
+    const queued = await queueFolderNotes(rels);
+    return Response.json({ queued });
+  }
+
+  const ymd = String(body?.ymd ?? "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return Response.json({ detail: "ymd が必要です" }, { status: 400 });
+  const view = await courseView(course);
+  const s = view.sessions.find((x) => x.ymd === ymd);
+  let folder = s?.folder ?? null;
+  if (!folder) {
+    folder = `${course}${ymd.replace(/-/g, "")}`;
+    await fs.mkdir(path.join(root, course, folder), { recursive: true });
+  }
+  if (body?.prepare) return Response.json({ folder });
+  try {
+    const noteId = await createNoteForFolder(path.join(course, folder));
+    return Response.json({ noteId });
+  } catch (e) {
+    return Response.json({ detail: String((e as Error).message ?? e) }, { status: 400 });
+  }
 }

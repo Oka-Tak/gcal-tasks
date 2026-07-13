@@ -10,6 +10,7 @@ import { notes } from "./db/schema";
 import { env } from "./env";
 import { AUDIO_EXT, addAudiosToNote, inFlightCount, summarizeAndPublish, type AudioSource } from "./notes";
 import { exportedPathsSync } from "./notes-export";
+import { dateFromFolderName, occurrenceForDate } from "./course-sessions";
 
 /**
  * フォルダ駆動ノート: 授業資料/<授業>/<フォルダ>/ を定期スキャンして、
@@ -162,6 +163,123 @@ async function readAudioSources(abs: string, names: string[]): Promise<AudioSour
 const changed = (a: FileStamp | undefined, b: FileStamp | undefined) =>
   !a || !b || a.mtimeMs !== b.mtimeMs || a.size !== b.size;
 
+/**
+ * フォルダからノートを作る共通部（スキャンの新フォルダ検出と「この回のノートを
+ * 作成」ボタンの両方）。フォルダ名の日付がカレンダーの開催日に一致すれば
+ * 予定に紐付け、タイトルを「<授業> 第N回 (M/D)」にする。
+ */
+async function createNote(ledger: Ledger, rel: string, abs: string, course: string, cur: FolderFiles): Promise<string> {
+  const id = crypto.randomUUID();
+  const dirName = path.basename(abs);
+  const dateMs = dateFromFolderName(dirName);
+  const occ = dateMs ? occurrenceForDate(course, dateMs) : null;
+  const title = occ
+    ? `${course} 第${occ.n}回 (${new Date(occ.dateMs).getMonth() + 1}/${new Date(occ.dateMs).getDate()})`
+    : dirName;
+  const notebook = `講義: ${course}`;
+  const now = Date.now();
+  db.insert(notes)
+    .values({
+      id, title, notebook, eventKey: occ?.eventKey ?? null,
+      status: cur.audio.length ? "transcribing" : "summarizing",
+      createdAt: now, updatedAt: now,
+    })
+    .run();
+  const entry = (ledger.folders[rel] ??= { noteId: null, files: {} });
+  entry.noteId = id;
+  entry.files = cur.stamps;
+  await saveLedger(ledger); // 要約側が folderMaterialsText で参照するので先に確定
+  const srcs = cur.audio.length ? await readAudioSources(abs, cur.audio) : [];
+  if (srcs.length) await addAudiosToNote(id, srcs);
+  else void summarizeAndPublish(id, title, null, notebook, "");
+  console.log(`[folder-notes] ${rel}: ノート作成「${title}」(音源${srcs.length} 資料${cur.materials.length})`);
+  return id;
+}
+
+/** UIの「この回のノートを作成」— 対象フォルダから即時にノートを作る。 */
+export async function createNoteForFolder(rel: string): Promise<string> {
+  const root = env.notesExportDir;
+  if (!root) throw new Error("KAIROS_NOTES_EXPORT 未設定");
+  const abs = path.join(root, rel);
+  if (!fsSync.existsSync(abs)) throw new Error("フォルダがありません");
+  const ledger = await loadLedger();
+  const existing = ledger.folders[rel];
+  if (existing?.noteId) {
+    const r = db.select().from(notes).where(eq(notes.id, existing.noteId)).get();
+    if (r && !r.deletedAt) throw new Error("このフォルダには既にノートがあります");
+  }
+  const cur = await collectFiles(abs, exportedPathsSync());
+  if (cur.audio.length === 0 && cur.materials.length === 0)
+    throw new Error("フォルダに資料・音声がありません");
+  return createNote(ledger, rel, abs, rel.split(path.sep)[0], cur);
+}
+
+/**
+ * 一括作成キュー: 台帳のfilesを空に戻すと、次回以降のスキャンが「新規ファイル」
+ * として拾い、1tick2件のペースでノート化していく（whisperx/エージェントの
+ * 飽和とquota消費を抑えるため即時全実行はしない）。
+ */
+export async function queueFolderNotes(rels: string[]): Promise<number> {
+  const ledger = await loadLedger();
+  let n = 0;
+  for (const rel of rels) {
+    const entry = (ledger.folders[rel] ??= { noteId: null, files: {} });
+    if (entry.noteId) continue;
+    entry.files = {};
+    n++;
+  }
+  if (n) await saveLedger(ledger);
+  return n;
+}
+
+/**
+ * 既存ノートをフォルダに紐付ける（ノートへの資料追加時）。以後そのフォルダの
+ * ファイル増減がこのノートを更新し、資料テキストが要約に入る。files は現状で
+ * スナップショットするので、直後の手動再要約と定期スキャンが二重に走らない。
+ */
+export async function bindNoteToFolder(noteId: string, folderAbs: string): Promise<boolean> {
+  const root = env.notesExportDir;
+  if (!root) return false;
+  const rel = path.relative(root, folderAbs);
+  if (rel.startsWith("..") || !rel) return false; // 授業資料の外（data/materials等）は対象外
+  const ledger = await loadLedger();
+  const entry = (ledger.folders[rel] ??= { noteId: null, files: {} });
+  if (!entry.noteId) entry.noteId = noteId;
+  entry.files = (await collectFiles(folderAbs, exportedPathsSync())).stamps;
+  await saveLedger(ledger);
+  return entry.noteId === noteId;
+}
+
+/**
+ * 整理スクリプト等がフォルダ内容を並べ替えた後に呼ぶ: 台帳のfilesを現状に
+ * 合わせて記録し直し、次のスキャンが移動を「新規ファイル」と誤検出して
+ * 一斉ノート生成しないようにする。
+ */
+export async function baselineFolders(rels: string[]): Promise<void> {
+  const root = env.notesExportDir;
+  if (!root) return;
+  const ledger = await loadLedger();
+  const exported = exportedPathsSync();
+  for (const rel of rels) {
+    const entry = (ledger.folders[rel] ??= { noteId: null, files: {} });
+    entry.files = (await collectFiles(path.join(root, rel), exported)).stamps;
+  }
+  await saveLedger(ledger);
+}
+
+/** ノートに紐付いたフォルダの絶対パス（未紐付けは null）。資料追加の置き先解決用。 */
+export function folderOfNoteSync(noteId: string): string | null {
+  const root = env.notesExportDir;
+  if (!root) return null;
+  try {
+    const led = JSON.parse(fsSync.readFileSync(LEDGER(), "utf8")) as Ledger;
+    const rel = Object.keys(led.folders ?? {}).find((k) => led.folders[k].noteId === noteId);
+    return rel ? path.join(root, rel) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** 1周スキャン。実行したアクション数を返す（テスト・手動実行用にexport）。 */
 export async function scanFolderNotes(): Promise<number> {
   const root = env.notesExportDir;
@@ -192,20 +310,7 @@ export async function scanFolderNotes(): Promise<number> {
 
     if (!entry.noteId) {
       // フォルダにソースが現れた → ノート新規作成（音声があれば文字起こしから）
-      const id = crypto.randomUUID();
-      const title = path.basename(abs);
-      const notebook = `講義: ${course}`;
-      const now = Date.now();
-      db.insert(notes)
-        .values({ id, title, notebook, status: cur.audio.length ? "transcribing" : "summarizing", createdAt: now, updatedAt: now })
-        .run();
-      entry.noteId = id;
-      entry.files = cur.stamps;
-      await saveLedger(ledger); // 要約側が folderMaterialsText で参照するので先に確定
-      const srcs = cur.audio.length ? await readAudioSources(abs, cur.audio) : [];
-      if (srcs.length) await addAudiosToNote(id, srcs);
-      else void summarizeAndPublish(id, title, null, notebook, "");
-      console.log(`[folder-notes] ${rel}: ノート作成 (音源${srcs.length} 資料${cur.materials.length})`);
+      await createNote(ledger, rel, abs, course, cur);
       actions++;
       continue;
     }

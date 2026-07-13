@@ -82,6 +82,7 @@ export async function addMaterial(opts: {
   filename: string;
   notebook?: string | null;
   eventKey?: string | null; // あれば「講義: <予定名>」の棚に入る
+  dir?: string | null; // 置き先の明示（ノートに紐付いたフォルダ等）。省略時は棚から解決
 }): Promise<MaterialView> {
   const ext = (path.extname(opts.filename) || "").toLowerCase();
   if (!owuiSupportedExt(ext)) throw new Error(`未対応の形式です: ${ext || "(拡張子なし)"}（pdf/docx/pptx/xlsx/csv/txt/md/html）`);
@@ -91,7 +92,7 @@ export async function addMaterial(opts: {
   const id = crypto.randomUUID();
   const safeName = path.basename(opts.filename).replace(/[\\/]/g, "_");
   // 授業資料フォルダ（回別があればそこ）に本体を置く。無理なら data/materials/
-  const folderDir = await resolveNoteDir(notebook, eventStartMs(opts.eventKey)).catch(() => null);
+  const folderDir = opts.dir ?? (await resolveNoteDir(notebook, eventStartMs(opts.eventKey)).catch(() => null));
   let abs: string;
   if (folderDir) {
     let name = safeName;
