@@ -871,6 +871,24 @@ function DetailModal({ ev, calendars, accounts, onClose, onEdit }: { ev: Ev; cal
   const cal = calendars.find((c) => c.account === ev.account && c.id === ev.calendarId);
   const acct = accounts.find((a) => a.email === ev.account);
   const rs = (r?: string) => ({ accepted: ["ok", "✓"], declined: ["no", "✕"], tentative: ["maybe", "?"] } as Record<string, string[]>)[r || ""] || ["", "・"];
+
+  // not for me: この予定のタイトルを通知ミュート（朝ブリーフィング・ナッジ除外）に出し入れ
+  const [muteKeys, setMuteKeys] = useState<string[] | null>(null);
+  useEffect(() => {
+    api("GET", "/api/notify").then((r) => setMuteKeys(r.mute ?? [])).catch(() => setMuteKeys([]));
+  }, []);
+  const norm = (s: string) => s.normalize("NFKC").toLowerCase();
+  const evTitle = (ev.summary ?? "").trim();
+  const mutedBy = (muteKeys ?? []).filter((k) => evTitle && norm(evTitle).includes(norm(k)));
+  const toggleMute = async () => {
+    if (muteKeys === null || !evTitle) return;
+    const next = mutedBy.length > 0 ? muteKeys.filter((k) => !mutedBy.includes(k)) : [...muteKeys, evTitle];
+    try {
+      const r = await api("PUT", "/api/notify", { mute: next });
+      setMuteKeys(r.mute ?? next);
+    } catch { /* 保存失敗 — ボタン再押下で再試行 */ }
+  };
+
   return (
     <Scrim onClose={onClose}>
       <div className="det-title"><span className="det-bar" style={{ background: ev.color || "#4285f4" }} /><span>{ev.summary}</span></div>
@@ -894,6 +912,13 @@ function DetailModal({ ev, calendars, accounts, onClose, onEdit }: { ev: Ev; cal
       </div>
       <div className="modal-foot" style={{ marginTop: 14 }}>
         {ev.htmlLink && <a className="btn" href={ev.htmlLink} target="_blank" rel="noopener noreferrer">Google で開く</a>}
+        <button className="btn" disabled={muteKeys === null || !evTitle}
+          title={mutedBy.length > 0
+            ? `通知ミュート中（キーワード: ${mutedBy.join(", ")}）— 押すと解除`
+            : "この予定のタイトルを通知ミュートに追加 — 朝ブリーフィングや期限ナッジに出なくなります"}
+          onClick={() => void toggleMute()}>
+          {muteKeys === null ? "…" : mutedBy.length > 0 ? "🔕 ミュート中" : "🔕 not for me"}
+        </button>
         <div className="spacer" />
         <button className="btn" onClick={onEdit}>編集</button>
         <button className="btn btn-primary" onClick={onClose}>閉じる</button>
