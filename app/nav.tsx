@@ -20,6 +20,8 @@ const TABS = [
 
 // Sibling app: mnemo — Open WebUI frontend (:443) over the mnemo bridge.
 const MNEMO_URL = "https://zundamon-ubuntu-alc6.tail7507d4.ts.net/";
+// mnemo 独自UI (:8443) — 人物メモ・用語集
+const MNEMO_UI_URL = "https://zundamon-ubuntu-alc6.tail7507d4.ts.net:8443/";
 
 export function Dock() {
   const path = usePathname();
@@ -38,6 +40,8 @@ export function Dock() {
       ))}
       <a href={MNEMO_URL} className="dicon dmnemo" data-label="mnemo（チャット）"
         target="_blank" rel="noopener noreferrer">M</a>
+      <a href={`${MNEMO_UI_URL}people`} className="dicon dmnemo" data-label="人物メモ・用語集 (:8443)"
+        target="_blank" rel="noopener noreferrer">👥</a>
     </aside>
   );
 }

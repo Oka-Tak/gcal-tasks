@@ -784,7 +784,6 @@ const hmOf = (ms: number) => { const d = new Date(ms); return `${pad(d.getHours(
 function PlanCard({ refreshKey }: { refreshKey: unknown }) {
   const [plan, setPlan] = useState<PlanResp | null>(null);
   const [openRoutines, setOpenRoutines] = useState(false);
-  const [openGlossary, setOpenGlossary] = useState(false);
   const [enriching, setEnriching] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const reload = useCallback(() => {
@@ -828,7 +827,9 @@ function PlanCard({ refreshKey }: { refreshKey: unknown }) {
               setMsg(`📋 コンテキストをコピーしました（${Math.round(r.chars / 1000)}k字）— Claude等に貼り付けてください`);
             }).catch((e) => setMsg(String(e).slice(0, 120)));
           }}>📋</button>
-        <button className="btn" onClick={() => setOpenGlossary(true)} title="用語集 — 自分固有の専門用語・団体をAIに教える">📖</button>
+        <a className="btn" href="https://zundamon-ubuntu-alc6.tail7507d4.ts.net:8443/glossary"
+          target="_blank" rel="noopener noreferrer"
+          title="用語集 — 自分固有の専門用語・団体をAIに教える（mnemoで編集）">📖</a>
         <button className="btn" onClick={() => setOpenRoutines(true)} title="寮食・風呂・洗濯・睡眠などの生活ルール">⚙</button>
       </div>
       {plan.now && (
@@ -850,69 +851,7 @@ function PlanCard({ refreshKey }: { refreshKey: unknown }) {
       {plan.warnings.slice(0, 2).map((w, i) => <p key={i} className="errline" style={{ margin: "4px 0 0" }}>⚠ {w}</p>)}
       {msg && <p className="hint" style={{ margin: "4px 0 0" }}>{msg}</p>}
       {openRoutines && <RoutinesModal onClose={() => { setOpenRoutines(false); reload(); }} />}
-      {openGlossary && <GlossaryModal onClose={() => setOpenGlossary(false)} />}
     </div>
-  );
-}
-
-type GlossaryItem = { id: string; term: string; aliases: string | null; definition: string | null };
-
-/** 用語集: 自分固有の専門用語・団体をAI（チャット/推定/OWUI RAG/mnemo）に教える。 */
-function GlossaryModal({ onClose }: { onClose: () => void }) {
-  const [items, setItems] = useState<GlossaryItem[]>([]);
-  const [err, setErr] = useState<string | null>(null);
-  const [draft, setDraft] = useState({ term: "", aliases: "", definition: "" });
-  const reload = useCallback(async () => {
-    const r = await api("GET", "/api/glossary");
-    setItems(r.glossary || []);
-  }, []);
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void reload().catch((e) => setErr(String(e)));
-  }, [reload]);
-  const save = async (w: Partial<GlossaryItem> & { term: string }) => {
-    try {
-      await api("POST", "/api/glossary", w);
-      await reload();
-      setErr(null);
-    } catch (e) {
-      setErr(String((e as Error).message ?? e).slice(0, 120));
-    }
-  };
-  return (
-    <Scrim onClose={onClose}>
-      <h3>📖 用語集</h3>
-      <p className="hint" style={{ marginTop: 0 }}>
-        自分にしか通じない用語・団体・略語をAIに教えます（チャット・タスク推定・OWUIのRAG・mnemoに反映）。
-        「（編集してください）」のままの行はAIに渡されません。
-      </p>
-      <div style={{ maxHeight: 340, overflowY: "auto" }}>
-        {items.map((g) => (
-          <div key={g.id} className="routine-row">
-            <input style={{ width: 110 }} defaultValue={g.term}
-              onBlur={(e) => { if (e.target.value !== g.term) void save({ ...g, term: e.target.value }); }} />
-            <input style={{ width: 110 }} placeholder="別名" defaultValue={g.aliases ?? ""}
-              onBlur={(e) => { if (e.target.value !== (g.aliases ?? "")) void save({ ...g, aliases: e.target.value }); }} />
-            <input style={{ flex: 1, minWidth: 160 }} placeholder="説明" defaultValue={g.definition ?? ""}
-              onBlur={(e) => { if (e.target.value !== (g.definition ?? "")) void save({ ...g, definition: e.target.value }); }} />
-            <button className="link-danger"
-              onClick={() => void api("DELETE", `/api/glossary?id=${encodeURIComponent(g.id)}`).then(reload)}>✕</button>
-          </div>
-        ))}
-      </div>
-      <div className="routine-row" style={{ marginTop: 8 }}>
-        <input style={{ width: 110 }} placeholder="用語" value={draft.term} onChange={(e) => setDraft({ ...draft, term: e.target.value })} />
-        <input style={{ width: 110 }} placeholder="別名" value={draft.aliases} onChange={(e) => setDraft({ ...draft, aliases: e.target.value })} />
-        <input style={{ flex: 1, minWidth: 160 }} placeholder="説明" value={draft.definition} onChange={(e) => setDraft({ ...draft, definition: e.target.value })} />
-        <button className="btn btn-primary" disabled={!draft.term.trim()}
-          onClick={() => { void save(draft); setDraft({ term: "", aliases: "", definition: "" }); }}>追加</button>
-      </div>
-      {err && <p className="errline">{err}</p>}
-      <div className="modal-foot" style={{ marginTop: 12 }}>
-        <div className="spacer" />
-        <button className="btn btn-primary" onClick={onClose}>閉じる</button>
-      </div>
-    </Scrim>
   );
 }
 

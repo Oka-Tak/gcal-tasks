@@ -167,8 +167,14 @@ export function notebookFor(explicit: string | null | undefined, eventKey: strin
 
 /* ------------------------------------------------------------ transcription */
 
+/** 話者分離が有効か（フラグ+HFトークンが揃ったときだけ）。 */
+export function diarizeEnabled(): boolean {
+  return env.whisperxDiarize && !!env.hfToken;
+}
+
 function runWhisperx(audioAbs: string, outDir: string, language = "ja"): Promise<{ ok: boolean; err: string }> {
   return new Promise((resolve) => {
+    const dia = diarizeEnabled();
     const args = [
       audioAbs,
       "--model", env.whisperxModel,
@@ -176,12 +182,13 @@ function runWhisperx(audioAbs: string, outDir: string, language = "ja"): Promise
       ...(language && language !== "auto" ? ["--language", language] : []),
       "--device", "cpu",
       "--compute_type", "int8",
-      "--no_align",
+      // 話者分離にはワード整列が必要 — 有効時のみ align を生かし pyannote を回す
+      ...(dia ? ["--diarize", "--hf_token", env.hfToken] : ["--no_align"]),
       // 幻覚ループ対策: 前セグメントの文脈引き継ぎを切る(雑音・無音で
       // 「私たちの話をしていますが…」型の無限繰り返しになる既知の問題)
       "--condition_on_previous_text", "False",
       "--output_dir", outDir,
-      "--output_format", "txt",
+      "--output_format", dia ? "json" : "txt", // 話者ラベルはjsonにしか出ない
     ];
     let child;
     try {
@@ -259,6 +266,26 @@ function ensureAudioRows(r: NoteRow): AudioRow[] {
   return rows;
 }
 
+/** 話者分離時のjson出力 → 「SPEAKER_00: …」形式（同一話者の連続セグメントは結合）。 */
+function transcriptFromDiarizedJson(raw: string): string {
+  const j = JSON.parse(raw) as { segments?: { text?: string; speaker?: string }[] };
+  const out: string[] = [];
+  let cur = "";
+  let curSpk: string | undefined;
+  for (const s of j.segments ?? []) {
+    const text = (s.text ?? "").trim();
+    if (!text) continue;
+    if (s.speaker !== curSpk && cur) {
+      out.push(curSpk ? `${curSpk}: ${cur}` : cur);
+      cur = "";
+    }
+    curSpk = s.speaker;
+    cur += (cur ? " " : "") + text;
+  }
+  if (cur) out.push(curSpk ? `${curSpk}: ${cur}` : cur);
+  return out.join("\n");
+}
+
 async function transcribeOne(a: AudioRow): Promise<void> {
   const outDir = path.join(path.dirname(a.audioPath), `wx-${a.id}`);
   db.update(noteAudios).set({ status: "transcribing", error: null }).where(eq(noteAudios.id, a.id)).run();
@@ -269,7 +296,9 @@ async function transcribeOne(a: AudioRow): Promise<void> {
       return;
     }
     const base = path.basename(a.audioPath).replace(/\.[^.]+$/, "");
-    const transcript = (await fs.readFile(path.join(outDir, `${base}.txt`), "utf8")).trim();
+    const transcript = diarizeEnabled()
+      ? transcriptFromDiarizedJson(await fs.readFile(path.join(outDir, `${base}.json`), "utf8")).trim()
+      : (await fs.readFile(path.join(outDir, `${base}.txt`), "utf8")).trim();
     db.update(noteAudios)
       .set(transcript ? { status: "done", transcript: transcript.slice(0, 200_000) } : { status: "error", error: "文字起こし結果が空でした" })
       .where(eq(noteAudios.id, a.id))

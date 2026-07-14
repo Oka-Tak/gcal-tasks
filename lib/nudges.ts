@@ -185,6 +185,9 @@ async function checkNightlyEnrich(): Promise<void> {
   await fs.writeFile(ENRICH_STAMP(), today); // 先に刻む — クラッシュで連打しない
   const r = await enrichTasks({ limit: 15 });
   if (r.updated) console.log(`[kairos] nightly enrich: ${r.lines.join(" / ")}`);
+  // 用語集のRAGコピーも夜間に置き換える（mnemo側での編集はKairosのpushを通らないため）
+  const { pushGlossaryToOwui } = await import("./glossary");
+  await pushGlossaryToOwui().catch((e) => console.log("[kairos] glossary push skipped:", String(e).slice(0, 100)));
 }
 
 const DEADLINE_TICK_MS = 60_000;

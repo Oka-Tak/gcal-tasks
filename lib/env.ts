@@ -49,6 +49,10 @@ export const env = {
   whisperxBin: process.env.KAIROS_WHISPERX_BIN ?? "whisperx",
   whisperxModel: process.env.KAIROS_WHISPERX_MODEL ?? "small",
   transcribeTimeoutMs: Number(process.env.KAIROS_TRANSCRIBE_TIMEOUT_MS ?? 3_600_000),
+  // 話者分離（pyannote）。HFトークン必須（pyannote/speaker-diarization の利用規約同意も必要）。
+  // CPUではかなり重くなるので既定OFF。
+  whisperxDiarize: process.env.KAIROS_WHISPERX_DIARIZE === "1",
+  hfToken: process.env.KAIROS_HF_TOKEN ?? "",
   // Hard ceiling for a single agent invocation.
   agentTimeoutMs: Number(process.env.KAIROS_AGENT_TIMEOUT_MS ?? 180000),
 };
