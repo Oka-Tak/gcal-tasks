@@ -87,6 +87,41 @@ const MIME: Record<string, string> = {
   ".html": "text/html",
 };
 
+/**
+ * 全ナレッジをベクタ検索してチャンクを返す（task-enrich のRAG用）。
+ * OWUIが落ちていても空配列で静かに退避する。
+ */
+export async function searchKnowledge(
+  query: string,
+  k = 6,
+): Promise<{ text: string; src: string }[]> {
+  try {
+    const token = await getToken();
+    const list = await owuiFetch("/api/v1/knowledge/", {}, token);
+    if (!list.ok) return [];
+    const raw = (await list.json()) as { id: string; name: string }[] | { items: { id: string; name: string }[] };
+    const kbs = Array.isArray(raw) ? raw : (raw.items ?? []);
+    if (kbs.length === 0) return [];
+    const byId = new Map(kbs.map((x) => [x.id, x.name]));
+    const r = await owuiFetch("/api/v1/retrieval/query/collection", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ collection_names: kbs.map((x) => x.id), query: query.slice(0, 600), k }),
+    }, token, 30_000);
+    if (!r.ok) return [];
+    const d = (await r.json()) as { documents?: string[][]; metadatas?: Record<string, unknown>[][] };
+    const docs = d.documents?.[0] ?? [];
+    const metas = d.metadatas?.[0] ?? [];
+    return docs.slice(0, k).map((text, i) => {
+      const m = metas[i] ?? {};
+      const col = byId.get(String(m.collection_name ?? "")) ?? "";
+      return { text: text.trim().slice(0, 1200), src: `${String(m.name ?? m.source ?? "資料")}${col ? `（${col}）` : ""}` };
+    });
+  } catch {
+    return [];
+  }
+}
+
 export function owuiSupportedExt(ext: string): boolean {
   return ext.toLowerCase() in MIME;
 }

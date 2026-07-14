@@ -30,6 +30,8 @@ export interface TaskWrite {
   energy?: number | null;
   kanban?: string | null; // board column: todo | doing | waiting
   remindAt?: number | null; // epoch ms — ntfy reminder time
+  asap?: boolean | null; // 期限ASAP
+  priority?: number | null; // 1(低)〜5(最優先)
 }
 
 const TASK_GOOGLE_FIELDS = ["title", "notes", "status", "due"] as const;
@@ -40,6 +42,8 @@ const TASK_LOCAL_FIELDS = [
   "difficulty",
   "energy",
   "kanban",
+  "asap",
+  "priority",
 ] as const;
 
 /** Pick the local-only columns present in the payload ("key present" = set it). */

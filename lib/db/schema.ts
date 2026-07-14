@@ -120,6 +120,8 @@ export const tasks = sqliteTable(
     actualMin: integer("actual_min"), // measured actual effort (feeds future estimates)
     difficulty: integer("difficulty"), // 1-5, your felt difficulty
     energy: integer("energy"), // 1-5, energy this needs / you had
+    asap: integer("asap", { mode: "boolean" }), // 期限ASAP — 何より先に（締切順の最上位）
+    priority: integer("priority"), // 1(低)〜5(最優先)。手動 or AI推定（task-enrich）
     syncedAt: integer("synced_at"),
     deletedAt: integer("deleted_at"),
   },
@@ -185,6 +187,25 @@ export const notes = sqliteTable(
  * 言語・文字起こし・状態を持ち、全音源が済んだら結合して要約する。
  * 旧ノートの notes.audio_path は残しつつ、新規はこちらに一本化。
  */
+/**
+ * 日常の生活ルール（寮の夕食・風呂・洗濯・睡眠・バイト等）。タスクではないが
+ * プランナーの制約になる: block=その時間は埋まる、deadline=その時刻までに
+ * 済ませる区切り（例: 20:10までに帰宅しないと夕食が食べられない）、
+ * sleep=就寝(startHM)〜起床(endHM)の推奨枠（1日の可処分時間の境界）。
+ */
+export const routines = sqliteTable("routines", {
+  id: text("id").primaryKey(), // uuid
+  label: text("label").notNull(), // 例: 寮の夕食 / 洗濯 / 推奨睡眠
+  kind: text("kind").notNull(), // block | deadline | sleep
+  days: text("days"), // "mon,tue,…"（null = 毎日）
+  startHm: text("start_hm"), // "18:30"（deadlineはnull可）
+  endHm: text("end_hm"), // "20:10"
+  note: text("note"),
+  active: integer("active", { mode: "boolean" }).notNull(),
+  createdAt: integer("created_at"),
+  updatedAt: integer("updated_at"),
+});
+
 export const noteAudios = sqliteTable(
   "note_audios",
   {

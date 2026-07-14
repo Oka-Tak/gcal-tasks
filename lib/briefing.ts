@@ -7,6 +7,8 @@ import { env } from "./env";
 import { pushEnabled, sendPush } from "./notify";
 import { muteMatcher } from "./notify-mute";
 import { runAgentAuto } from "./agent";
+import { buildPlan } from "./planner";
+import { enrichTasks } from "./task-enrich";
 import { yesterdaySpendLine } from "./money";
 
 /**
@@ -133,9 +135,24 @@ export async function checkMorningBriefing(force = false): Promise<boolean> {
     await fs.writeFile(STAMP_FILE(), today); // stamp first — a crash must not spam
   }
 
+  // 朝の一括推定: 見積り・優先度が空のタスクをRAG+AIで埋めてからプランを組む
+  await enrichTasks({ limit: 10 }).catch((e) => console.log("[briefing] enrich skipped:", String(e).slice(0, 120)));
+
   const muted = muteMatcher();
   const evLines = todayEvents(now, muted);
   const taskLines = dueTasks(now, muted);
+  const planLines = (() => {
+    try {
+      const p = buildPlan(1);
+      const todayBlocks = p.blocks.filter((b) => !muted(b.title)).slice(0, 8);
+      const lines = todayBlocks.map((b) =>
+        b.kind === "deadline" ? `・${hm(b.startMs)} ⏰ ${b.title}` : `・${hm(b.startMs)}-${hm(b.endMs)} ${b.title}`,
+      );
+      return [...lines, ...p.warnings.slice(0, 3).map((w) => `・⚠ ${w}`)];
+    } catch {
+      return [];
+    }
+  })();
   const recap = yesterdayRecap(now);
   const ai = await aiOneliner(evLines, taskLines, recap);
 
@@ -143,6 +160,7 @@ export async function checkMorningBriefing(force = false): Promise<boolean> {
     evLines.length ? "📅 今日の予定" : "📅 今日の予定はありません",
     ...evLines,
     ...(taskLines.length ? ["", "⏰ 近い締切", ...taskLines] : []),
+    ...(planLines.length ? ["", "🧭 今日のプラン（空き時間の割り当て）", ...planLines] : []),
     ...(recap.length ? ["", "🌙 昨日", ...recap] : []),
     ...(ai ? ["", `💡 ${ai}`] : []),
   ].join("\n");

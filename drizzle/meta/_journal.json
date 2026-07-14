@@ -85,6 +85,13 @@
       "when": 1783752152144,
       "tag": "0011_fixed_richard_fisk",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1783993013260,
+      "tag": "0012_opposite_rockslide",
+      "breakpoints": true
     }
   ]
 }

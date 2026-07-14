@@ -51,6 +51,8 @@ export function serializeTask(r: TaskRow) {
     energy: r.energy,
     kanban: r.kanban, // board column (todo | doing | waiting; null = todo)
     remindAt: r.remindAt, // epoch ms — ntfy reminder
+    asap: r.asap, // 期限ASAP（締切順の最上位）
+    priority: r.priority, // 1(低)〜5(最優先)
   };
 }
 

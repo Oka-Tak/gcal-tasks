@@ -24,6 +24,7 @@ type Task = {
   status: string; due?: string | null; dueTime?: string | null; parent?: string | null;
   estimatedMin?: number | null; actualMin?: number | null;
   difficulty?: number | null; energy?: number | null; remindAt?: number | null;
+  asap?: boolean | null; priority?: number | null;
 };
 type ListMeta = { account: string; id: string; title: string | null };
 type ActualLog = {
@@ -50,6 +51,7 @@ type TaskDraft = {
   due: string; dueTime: string; notes: string; done: boolean;
   est: string; actual: string; difficulty: string; energy: string; // planning flywheel (as input strings)
   remind: string; // datetime-local — ntfy push reminder
+  asap: boolean; priority: string; // ASAP期限 / 優先度1-5
 };
 
 /* ------------------------------------------------------------ date helpers */
@@ -271,6 +273,7 @@ export default function Calendar() {
         account: l.account, tasklist: l.id, title,
         due: "", dueTime: "", notes: "", done: false,
         est: "", actual: "", difficulty: "", energy: "", remind: "",
+        asap: false, priority: "",
       },
     });
   }
@@ -285,6 +288,7 @@ export default function Calendar() {
         est: numStr(t.estimatedMin), actual: numStr(t.actualMin),
         difficulty: numStr(t.difficulty), energy: numStr(t.energy),
         remind: t.remindAt ? localInput(new Date(t.remindAt)) : "",
+        asap: !!t.asap, priority: numStr(t.priority),
       },
     });
   }
@@ -320,6 +324,7 @@ export default function Calendar() {
       estimatedMin: num(d.est), actualMin: num(d.actual),
       difficulty: num(d.difficulty), energy: num(d.energy),
       remindAt: d.remind ? Date.parse(d.remind) : null,
+      asap: d.asap, priority: num(d.priority),
     };
     try {
       if (modal.isNew) {
@@ -685,14 +690,16 @@ function TasksRail(props: {
 }) {
   const { lists, tasks, multi, acctColor, onToggle, onOpen, onAdd, onAddDetail } = props;
   const now = startOfDay(new Date());
-  const [byDue, setByDue] = useState(false);
+  // 既定は締切順（明示的に手動へ切り替えた場合だけ従う）
+  const [byDue, setByDue] = useState(true);
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (localStorage.getItem("kairos-task-sort") === "due") setByDue(true);
+    if (localStorage.getItem("kairos-task-sort") === "manual") setByDue(false);
   }, []);
   const toggle = () => setByDue((v) => { localStorage.setItem("kairos-task-sort", v ? "manual" : "due"); return !v; });
   return (
     <div className="rail">
+      <PlanCard refreshKey={tasks} />
       <div className="railhead">
         <h2>タスク</h2>
         <div className="spacer" />
@@ -714,6 +721,172 @@ function TasksRail(props: {
   );
 }
 
+/* ------------------------------------------------------- planner + routines */
+type PlanBlock = { kind: "task" | "deadline"; title: string; startMs: number; endMs: number; taskKey?: string; note?: string };
+type PlanResp = {
+  blocks: PlanBlock[];
+  now: { kind: string; title: string; untilMs: number | null; note?: string } | null;
+  warnings: string[];
+};
+type Routine = {
+  id: string; label: string; kind: string; days: string | null;
+  startHm: string | null; endHm: string | null; note: string | null; active: boolean;
+};
+
+const hmOf = (ms: number) => { const d = new Date(ms); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+
+/**
+ * 「今なにをするか」— 予定・生活ルーチンで埋まっていない空き時間に、
+ * ASAP>優先度>締切順でタスクを自動配置したプラン（/api/plan、AI不使用・即答）。
+ */
+function PlanCard({ refreshKey }: { refreshKey: unknown }) {
+  const [plan, setPlan] = useState<PlanResp | null>(null);
+  const [openRoutines, setOpenRoutines] = useState(false);
+  const [enriching, setEnriching] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const reload = useCallback(() => {
+    api("GET", "/api/plan").then(setPlan).catch(() => {});
+  }, []);
+  useEffect(() => { reload(); }, [reload, refreshKey]);
+  useEffect(() => {
+    const t = setInterval(reload, 5 * 60_000);
+    return () => clearInterval(t);
+  }, [reload]);
+
+  const enrich = async () => {
+    setEnriching(true);
+    setMsg(null);
+    try {
+      const r = await api("POST", "/api/plan", { enrich: true });
+      setPlan(r.plan);
+      setMsg(r.updated > 0 ? `AI推定: ${r.lines.slice(0, 3).join(" / ")}` : "推定対象なし（見積り・優先度は入っています）");
+    } catch (e) {
+      setMsg(String((e as Error).message ?? e).slice(0, 120));
+    } finally {
+      setEnriching(false);
+    }
+  };
+
+  if (!plan) return null;
+  const today = new Date(); today.setHours(23, 59, 59, 0);
+  const todays = plan.blocks.filter((b) => b.startMs <= today.getTime()).slice(0, 6);
+  return (
+    <div className="card plancard">
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <h3 style={{ margin: 0, flex: 1 }}>🧭 今やること</h3>
+        <button className="btn" disabled={enriching} onClick={() => void enrich()}
+          title="締切ありタスクをRAG(授業ノート等)でクロールして見積り・優先度をAI推定">
+          {enriching ? "推定中…" : "🤖 AI推定"}
+        </button>
+        <button className="btn" onClick={() => setOpenRoutines(true)} title="寮食・風呂・洗濯・睡眠などの生活ルール">⚙</button>
+      </div>
+      {plan.now && (
+        <div className="plannow">
+          {plan.now.kind === "event" ? "📅 " : plan.now.kind === "routine" ? "🏠 " : plan.now.kind === "task" ? "▶ " : ""}
+          {plan.now.title}
+          {plan.now.untilMs && <span className="lmeta">（〜{hmOf(plan.now.untilMs)}）</span>}
+        </div>
+      )}
+      <div className="planlist">
+        {todays.map((b, i) => (
+          <div key={i} className={`planrow${b.kind === "deadline" ? " dl" : ""}${b.endMs <= Date.now() ? " past" : ""}`}>
+            <span className="pt">{b.kind === "deadline" ? `${hmOf(b.startMs)} ⏰` : `${hmOf(b.startMs)}-${hmOf(b.endMs)}`}</span>
+            <span className="pl">{b.title}</span>
+          </div>
+        ))}
+        {todays.length === 0 && <p className="hint" style={{ margin: 0 }}>今日はもう割り当てなし</p>}
+      </div>
+      {plan.warnings.slice(0, 2).map((w, i) => <p key={i} className="errline" style={{ margin: "4px 0 0" }}>⚠ {w}</p>)}
+      {msg && <p className="hint" style={{ margin: "4px 0 0" }}>{msg}</p>}
+      {openRoutines && <RoutinesModal onClose={() => { setOpenRoutines(false); reload(); }} />}
+    </div>
+  );
+}
+
+const R_KIND_LABEL: Record<string, string> = { block: "時間確保", deadline: "締切", sleep: "睡眠" };
+const R_DAYS = [["mon", "月"], ["tue", "火"], ["wed", "水"], ["thu", "木"], ["fri", "金"], ["sat", "土"], ["sun", "日"]] as const;
+
+/** 生活ルール（寮食・風呂・洗濯・睡眠・バイト等）のCRUD。プランナーの制約になる。 */
+function RoutinesModal({ onClose }: { onClose: () => void }) {
+  const [items, setItems] = useState<Routine[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const [draft, setDraft] = useState({ label: "", kind: "block", days: "", startHm: "", endHm: "" });
+  const reload = useCallback(async () => {
+    const r = await api("GET", "/api/routines");
+    setItems(r.routines || []);
+  }, []);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void reload().catch((e) => setErr(String(e)));
+  }, [reload]);
+  const save = async (w: Partial<Routine> & { label: string; kind: string }) => {
+    try {
+      await api("POST", "/api/routines", w);
+      await reload();
+      setErr(null);
+    } catch (e) {
+      setErr(String((e as Error).message ?? e).slice(0, 120));
+    }
+  };
+  const del = async (id: string) => {
+    await api("DELETE", `/api/routines?id=${encodeURIComponent(id)}`).catch(() => {});
+    await reload();
+  };
+  const toggleDay = (days: string, key: string) => {
+    const set = new Set(days.split(",").map((s) => s.trim()).filter(Boolean));
+    if (set.has(key)) set.delete(key); else set.add(key);
+    return [...set].join(",");
+  };
+  return (
+    <Scrim onClose={onClose}>
+      <h3>⚙ 生活ルール</h3>
+      <p className="hint" style={{ marginTop: 0 }}>
+        タスクではない日常の枠。プランはこの時間を避けて組まれます。締切=「その時刻までに」(例: 寮の夕食は20:10までに帰宅)、睡眠=就寝〜起床が1日の境界。曜日指定なし=毎日。
+      </p>
+      {items.map((r) => (
+        <div key={r.id} className="routine-row">
+          <input style={{ flex: 1, minWidth: 90 }} defaultValue={r.label}
+            onBlur={(e) => { if (e.target.value !== r.label) void save({ ...r, label: e.target.value }); }} />
+          <select value={r.kind} onChange={(e) => void save({ ...r, kind: e.target.value })}>
+            {Object.entries(R_KIND_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          </select>
+          <input type="time" defaultValue={r.startHm ?? ""} title={r.kind === "sleep" ? "就寝" : "開始"}
+            onBlur={(e) => { if (e.target.value !== (r.startHm ?? "")) void save({ ...r, startHm: e.target.value || null }); }} />
+          <input type="time" defaultValue={r.endHm ?? ""} title={r.kind === "sleep" ? "起床" : r.kind === "deadline" ? "この時刻までに" : "終了"}
+            onBlur={(e) => { if (e.target.value !== (r.endHm ?? "")) void save({ ...r, endHm: e.target.value || null }); }} />
+          <span className="rdays">
+            {R_DAYS.map(([k, v]) => (
+              <button key={k} className={`daybtn${(r.days ?? "").includes(k) ? " on" : ""}`}
+                onClick={() => void save({ ...r, days: toggleDay(r.days ?? "", k) })}>{v}</button>
+            ))}
+          </span>
+          <input type="checkbox" checked={r.active} title="有効/無効"
+            onChange={(e) => void save({ ...r, active: e.target.checked })} />
+          <button className="link-danger" onClick={() => void del(r.id)}>✕</button>
+        </div>
+      ))}
+      <div className="routine-row" style={{ marginTop: 8 }}>
+        <input style={{ flex: 1, minWidth: 90 }} placeholder="例: 風呂 / 洗濯 / バイト" value={draft.label}
+          onChange={(e) => setDraft({ ...draft, label: e.target.value })} />
+        <select value={draft.kind} onChange={(e) => setDraft({ ...draft, kind: e.target.value })}>
+          {Object.entries(R_KIND_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+        </select>
+        <input type="time" value={draft.startHm} onChange={(e) => setDraft({ ...draft, startHm: e.target.value })} />
+        <input type="time" value={draft.endHm} onChange={(e) => setDraft({ ...draft, endHm: e.target.value })} />
+        <button className="btn btn-primary" disabled={!draft.label.trim()}
+          onClick={() => { void save({ label: draft.label, kind: draft.kind, startHm: draft.startHm || null, endHm: draft.endHm || null, days: draft.days || null }); setDraft({ label: "", kind: "block", days: "", startHm: "", endHm: "" }); }}>
+          追加
+        </button>
+      </div>
+      {err && <p className="errline">{err}</p>}
+      <div className="modal-foot" style={{ marginTop: 12 }}>
+        <div className="spacer" />
+        <button className="btn btn-primary" onClick={onClose}>閉じる</button>
+      </div>
+    </Scrim>
+  );
+}
+
 /** One task list: add row on top, open tasks, completed behind a fold. */
 function TList(props: {
   list: ListMeta; items: Task[]; multi: boolean; acctColor: (e: string) => string; now: Date; byDue: boolean;
@@ -723,8 +896,9 @@ function TList(props: {
   const { list: l, items, multi, acctColor, now, byDue, onToggle, onOpen, onAdd, onAddDetail } = props;
   const [showDone, setShowDone] = useState(false);
   const byDone = (a: Task, b: Task) => Number(a.status === "completed") - Number(b.status === "completed");
-  // 締切順: 早い順、時刻はタイブレーク、期限なしは末尾
-  const dueKey = (t: Task) => (t.due ? `${t.due.slice(0, 10)}T${t.dueTime ?? "23:59"}` : "9999-99-99");
+  // 締切順: ASAP最優先 → 期日昇順（時刻タイブレーク、期限なしは末尾）→ 優先度降順
+  const dueKey = (t: Task) =>
+    `${t.asap ? "0" : "1"}|${t.due ? `${t.due.slice(0, 10)}T${t.dueTime ?? "23:59"}` : "9999-99-99"}|${9 - (t.priority ?? 0)}`;
   const byDueSort = (a: Task, b: Task) => dueKey(a) < dueKey(b) ? -1 : dueKey(a) > dueKey(b) ? 1 : 0;
   const sortActive = <T extends Task>(arr: T[]) => (byDue ? arr.slice().sort(byDueSort) : arr);
   const parents = items.filter((t) => !t.parent);
@@ -739,7 +913,11 @@ function TList(props: {
       <div key={`${t.account}:${t.id}`} className={`task${isDone ? " done" : ""}${sub ? " sub" : ""}`}>
         <div className={`cbox${isDone ? " on" : ""}`} onClick={() => onToggle(t)} />
         <div className="body2" onClick={() => onOpen(t)}>
-          <div className="title">{t.title || "(無題)"}</div>
+          <div className="title">
+            {t.asap && !isDone && <span className="asap">ASAP</span>}
+            {(t.priority ?? 0) >= 4 && !isDone && <span className="prio" title={`優先度${t.priority}`}>{"!".repeat((t.priority ?? 4) - 3)}</span>}
+            {t.title || "(無題)"}
+          </div>
           {dd && <div className={`due${over ? " over" : ""}`}>{dd.getMonth() + 1}/{dd.getDate()}{t.dueTime ? ` ${t.dueTime}` : ""}</div>}
         </div>
       </div>
@@ -977,8 +1155,12 @@ function TaskModal({ isNew, draft, set, subtasks, onToggleSub, onOpenSub, onAddS
       </div>
       <div className="field"><label>タイトル</label><input value={draft.title} onChange={(e) => set({ title: e.target.value })} /></div>
       <div className="row2">
-        <div className="field"><label>期限（日付）</label><input type="date" value={draft.due} onChange={(e) => set({ due: e.target.value })} /></div>
-        <div className="field"><label>時刻</label><input type="time" value={draft.dueTime} onChange={(e) => set({ dueTime: e.target.value })} disabled={!draft.due} /></div>
+        <div className="field"><label>期限（日付）</label><input type="date" value={draft.due} onChange={(e) => set({ due: e.target.value })} disabled={draft.asap} /></div>
+        <div className="field"><label>時刻</label><input type="time" value={draft.dueTime} onChange={(e) => set({ dueTime: e.target.value })} disabled={!draft.due || draft.asap} /></div>
+      </div>
+      <div className="chk" style={{ marginBottom: 8 }}>
+        <input type="checkbox" id="asap-chk" checked={draft.asap} onChange={(e) => set({ asap: e.target.checked })} />
+        <label htmlFor="asap-chk" style={{ margin: 0 }}>⚡ ASAP — できるだけ早く（締切順の最上位・プランの先頭に入ります）</label>
       </div>
       <div className="hint">時刻は Kairos のみで保持（Google Tasks は日付しか持てない）。スマホの Google には出ません。</div>
       <div className="field"><label>リマインド通知（ntfy）</label><input type="datetime-local" value={draft.remind} onChange={(e) => set({ remind: e.target.value })} /></div>
@@ -1011,16 +1193,24 @@ function TaskModal({ isNew, draft, set, subtasks, onToggleSub, onOpenSub, onAddS
         <div className="field"><label>実績（分）</label><input type="number" min={1} value={draft.actual} onChange={(e) => set({ actual: e.target.value })} /></div>
       </div>
       <div className="row2">
+        <div className="field"><label>優先度（1-5、5=最優先）</label>
+          <select value={draft.priority} onChange={(e) => set({ priority: e.target.value })}>
+            {levels.map((v) => <option key={v} value={v}>{v || "—"}</option>)}
+          </select>
+        </div>
         <div className="field"><label>難易度（1-5）</label>
           <select value={draft.difficulty} onChange={(e) => set({ difficulty: e.target.value })}>
             {levels.map((v) => <option key={v} value={v}>{v || "—"}</option>)}
           </select>
         </div>
+      </div>
+      <div className="row2">
         <div className="field"><label>エネルギー（1-5）</label>
           <select value={draft.energy} onChange={(e) => set({ energy: e.target.value })}>
             {levels.map((v) => <option key={v} value={v}>{v || "—"}</option>)}
           </select>
         </div>
+        <div className="field" />
       </div>
       <div className="hint">完了時に実績（かかった分数）を記録すると、AIの見積りがあなた仕様に較正されていきます。</div>
       {!isNew && (
