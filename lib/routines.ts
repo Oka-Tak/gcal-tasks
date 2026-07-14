@@ -37,21 +37,27 @@ export function listRoutines(): RoutineRow[] {
   return db.select().from(routines).orderBy(asc(routines.createdAt)).all();
 }
 
-const HM_RE = /^\d{1,2}:\d{2}$/;
+export const isRoutineHm = (value: string): boolean => /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
 
 export function upsertRoutine(w: RoutineWrite): RoutineRow {
   if (!w.label?.trim()) throw new Error("label が必要です");
+  if (w.label.length > 200) throw new Error("label は200文字までです");
   if (!["block", "deadline", "sleep"].includes(w.kind)) throw new Error("kind は block/deadline/sleep");
   for (const hm of [w.startHm, w.endHm]) {
-    if (hm && !HM_RE.test(hm)) throw new Error(`時刻は HH:MM 形式で: ${hm}`);
+    if (hm && !isRoutineHm(hm)) throw new Error(`時刻は HH:MM 形式で: ${hm}`);
   }
+  const dayList = (w.days ?? "").trim().toLowerCase().split(/[,\s]+/).filter(Boolean);
+  if (dayList.some((day) => !(DAY_KEYS as readonly string[]).includes(day))) {
+    throw new Error("days は sun,mon,tue,wed,thu,fri,sat の組み合わせです");
+  }
+  if (w.note && w.note.length > 2000) throw new Error("note は2000文字までです");
   const now = Date.now();
   const id = w.id ?? crypto.randomUUID();
   const row: typeof routines.$inferInsert = {
     id,
     label: w.label.trim(),
     kind: w.kind,
-    days: w.days?.trim() || null,
+    days: dayList.length ? [...new Set(dayList)].join(",") : null,
     startHm: w.startHm || null,
     endHm: w.endHm || null,
     note: w.note?.trim() || null,

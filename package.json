@@ -7,6 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test": "tsx --test tests/**/*.test.ts",
+    "e2e:screenshot": "tsx scripts/e2e-calendar-screenshot.ts",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {

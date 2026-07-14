@@ -8,7 +8,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { eq, sql } from "drizzle-orm";
 import { db } from "../lib/db";
-import { notes, materials } from "../lib/db/schema";
+import { notes } from "../lib/db/schema";
 import { dateFromFolderName, occurrenceForDate } from "../lib/course-sessions";
 import { exportNoteFiles } from "../lib/notes-export";
 import { pushNoteToOwui } from "../lib/owui";

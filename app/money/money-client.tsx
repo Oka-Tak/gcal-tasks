@@ -70,7 +70,7 @@ export default function MoneyClient() {
     void load();
   }, [load]);
 
-  const add = useCallback(async () => {
+  async function add() {
     const n = Number(amount);
     if (!Number.isFinite(n) || n === 0 || busy) return;
     setBusy(true);
@@ -85,7 +85,7 @@ export default function MoneyClient() {
     } finally {
       setBusy(false);
     }
-  }, [amount, category, title, busy, load]);
+  }
 
   const upload = useCallback(async (f: File) => {
     setUploading(true);

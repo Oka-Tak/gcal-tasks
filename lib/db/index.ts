@@ -15,11 +15,10 @@ function create(): DrizzleDb {
   sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("busy_timeout = 5000");
   const d = drizzle(sqlite, { schema });
-  try {
-    migrate(d, { migrationsFolder: path.join(process.cwd(), "drizzle") });
-  } catch (e) {
-    console.error("[kairos] migration failed:", e);
-  }
+  // A partially migrated schema is unsafe to serve. Let startup/request fail
+  // loudly so the operator fixes the migration instead of seeing later data
+  // corruption or unrelated route errors.
+  migrate(d, { migrationsFolder: path.join(process.cwd(), "drizzle") });
   return d;
 }
 

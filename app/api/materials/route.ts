@@ -1,8 +1,13 @@
 import { type NextRequest } from "next/server";
 import { auth } from "@/auth";
 import { addMaterial, deleteMaterial, listMaterials, listNotebooks } from "@/lib/materials";
+import { uploadSetError } from "@/lib/upload-limits";
 
 export const runtime = "nodejs";
+
+const MAX_FILES = 8;
+const MAX_FILE_BYTES = 50_000_000;
+const MAX_TOTAL_BYTES = 200_000_000;
 
 async function requireUser() {
   const session = await auth();
@@ -21,8 +26,8 @@ export async function POST(req: NextRequest) {
   if (!(await requireUser())) return Response.json({ detail: "unauthenticated" }, { status: 401 });
   const form = await req.formData();
   const files = form.getAll("files").filter((f): f is File => f instanceof File);
-  if (!files.length) return Response.json({ detail: "files required" }, { status: 400 });
-  if (files.length > 8) return Response.json({ detail: "一度に8件までです" }, { status: 400 });
+  const uploadError = uploadSetError(files, { maxFiles: MAX_FILES, maxFileBytes: MAX_FILE_BYTES, maxTotalBytes: MAX_TOTAL_BYTES });
+  if (uploadError) return Response.json({ detail: uploadError }, { status: 400 });
   const notebook = (form.get("notebook") as string | null)?.trim() || null;
   const eventKey = (form.get("eventKey") as string | null)?.trim() || null;
   const created = [];

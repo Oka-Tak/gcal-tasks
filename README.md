@@ -41,16 +41,17 @@ npm run dev                     # http://localhost:3000
 
 **複数アカウント**: 右上のアカウント表示 →「+ アカウントを追加」で別の Google を接続。切断も同じ場所。
 
-## 3. 公開する（Cloudflare Tunnel + Access）
+## 3. 公開する（現在の本番: Tailscale Serve）
 
 > Cloudflare **Pages には載らない**（Next.js の常駐サーバ＋SQLite ファイルは Workers では動かない）。
-> Proxmox 上で `npm run start` し、前段に **Cloudflare Tunnel（公開 https）+ Access（認証）** を置く。
+> 現在はProxmox上のsystemdサービスをTailscale Serveでtailnet内だけに公開する。
 
-1. `npm run build && npm run start`（既定 `0.0.0.0:3000`。Tunnel 前提なら待ち受けは Proxmox 内部に留める）。
-2. `AUTH_URL` を公開 URL（例 `https://cal.example.com`）に。Google のリダイレクト URI も同URLで登録。
-3. `cloudflared` で `cal.example.com → http://127.0.0.1:3000` を公開。
-4. Zero Trust → Access で `cal.example.com` を保護し、許可する identity（自分のメール）を設定。
-5. 多層防御として `ALLOWED_EMAILS` を設定（Auth.js のログインを許可リストに制限）。ポートは外に晒さない。
+1. `npm run build && npm run start -- -H 127.0.0.1 -p 3000` でloopbackだけに待ち受ける。
+2. Tailscale Serveから `http://127.0.0.1:3000` へ転送する。インターネット公開は有効にしない。
+3. `AUTH_URL` をTailscale ServeのHTTPS URLにする。GoogleのリダイレクトURIも同URLで登録する。
+4. `ALLOWED_EMAILS` でAuth.jsのログインを許可リストに制限する。
+
+`proxy.ts` のCloudflare Access検証は過去の構成との互換用であり、関連環境変数が未設定でもTailscale本番を遮断しない。
 
 ## 4. 知っておくべき制約
 
@@ -85,4 +86,5 @@ lib/crypto.ts         トークン暗号化（AES-256-GCM）
 drizzle/              生成済みマイグレーション（起動時に自動適用）
 ```
 
-設計の詳細・落とし穴は `CONTEXT.md` を参照。環境変数は `.env.example` を参照。
+設計の詳細・落とし穴は `CONTEXT.md`、2026-07-14時点のコード監査結果と改善計画は
+`AUDIT.md` を参照。環境変数は `.env.example` を参照。

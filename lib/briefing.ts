@@ -34,7 +34,7 @@ function todayEvents(now: Date, muted: (t: string | null | undefined) => boolean
   const rows = db
     .select()
     .from(events)
-    .where(and(lt(events.startMs, dayEnd), gte(events.endMs, dayStart)))
+    .where(and(isNull(events.deletedAt), lt(events.startMs, dayEnd), gte(events.endMs, dayStart)))
     .orderBy(asc(events.startMs))
     .all()
     .filter((e) => e.status !== "cancelled" && !muted(e.summary));

@@ -1,4 +1,4 @@
-import { eq, isNull } from "drizzle-orm";
+import { isNull } from "drizzle-orm";
 import { db } from "../lib/db";
 import { notes } from "../lib/db/schema";
 import { exportNoteFiles } from "../lib/notes-export";

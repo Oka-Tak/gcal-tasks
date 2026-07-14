@@ -60,7 +60,7 @@ export async function GET(req: NextRequest) {
   } catch { /* 共有未同期 */ }
   for (const d of dirs) {
     let files = 0;
-    for await (const _ of walk(path.join(root, d))) files++;
+    for await (const filePath of walk(path.join(root, d))) if (filePath) files++;
     const notebook = `講義: ${d}`;
     out.push({ folder: d, notebook, files, notes: noteCounts.get(notebook) ?? 0 });
   }

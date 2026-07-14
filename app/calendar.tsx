@@ -7,6 +7,7 @@ import { ChatPane } from "./chat-pane";
 import { AudioUpload } from "./notes/notes-client";
 import { Dock, MobileTabs } from "./nav";
 import { BotIcon, ClockIcon, PlusIcon, RefreshIcon } from "./icons";
+import { eventOverlapsDay, eventSegmentForDay } from "@/lib/calendar-segments";
 
 /* ------------------------------------------------------------------ types */
 type Account = { email: string; name?: string | null; picture?: string | null; color?: string | null };
@@ -133,6 +134,8 @@ export default function Calendar() {
   // 🧭プラン: 空き時間へのタスク自動配置をグリッドに薄く重ねる（既定ON）
   const [planBlocks, setPlanBlocks] = useState<PlanBlock[]>([]);
   const [showPlan, setShowPlan] = useState(true);
+  const reloadSeq = useRef(0);
+  const taskReloadSeq = useRef(0);
 
   const acctColor = useCallback(
     (email: string) => accounts.find((a) => a.email === email)?.color || "#888",
@@ -190,12 +193,16 @@ export default function Calendar() {
   }, [authed, tasks, reloadPlan]);
 
   const reloadTasks = useCallback(async () => {
+    const seq = ++taskReloadSeq.current;
     const tk = await api("GET", "/api/tasks");
+    if (seq !== taskReloadSeq.current) return;
     setLists(tk.lists);
     setTasks(tk.tasks);
   }, []);
 
   const reload = useCallback(async () => {
+    const seq = ++reloadSeq.current;
+    const taskSeq = ++taskReloadSeq.current;
     try {
       const [min, max] = rangeFor(view, anchor);
       // 5系統を並列に（以前は直列の滝で体感が重かった）
@@ -206,11 +213,14 @@ export default function Calendar() {
         api("GET", "/api/tasks"),
         fetch("/api/status").then((r) => r.json()),
       ]);
+      if (seq !== reloadSeq.current) return;
       setEvents(evs);
       setCalendars(cals);
       setActuals(lg.logs || []);
-      setLists(tk.lists);
-      setTasks(tk.tasks);
+      if (taskSeq === taskReloadSeq.current) {
+        setLists(tk.lists);
+        setTasks(tk.tasks);
+      }
       setAccounts(st.accounts || []);
       // 次回起動を即描画するためのキャッシュ (stale-while-revalidate)
       try {
@@ -377,11 +387,13 @@ export default function Calendar() {
     for (const ev of events) {
       if (ev.allDay) continue;
       const s = new Date(ev.start);
-      if (!sameDay(s, day)) continue;
       const e = new Date(ev.end);
-      const sm = s.getHours() * 60 + s.getMinutes();
-      const em = Math.max(e.getHours() * 60 + e.getMinutes(), sm + 20);
-      out.push({ key: `e:${ev.account}:${ev.id}`, color: ev.color || "#4285f4", label: ev.summary, s: sm, e: em, isTask: false, done: false, onClick: () => openDetail(ev) });
+      const dayStart = startOfDay(day).getTime();
+      const segment = eventSegmentForDay(s.getTime(), e.getTime(), dayStart);
+      if (!segment) continue;
+      const sm = segment.startMinute;
+      const em = segment.endMinute;
+      out.push({ key: `e:${ev.account}:${ev.calendarId}:${ev.id}:${dayStart}`, color: ev.color || "#4285f4", label: ev.summary, s: sm, e: em, isTask: false, done: false, onClick: () => openDetail(ev) });
     }
     for (const t of tasks) {
       const dd = taskDueDate(t);
@@ -702,8 +714,12 @@ function MonthView(props: {
           });
           events.filter((e) => !e.allDay).forEach((e) => {
             const s = new Date(e.start);
-            if (!sameDay(s, d)) return;
-            items.push({ key: `e:${e.account}:${e.id}`, sort: s.getHours() * 60 + s.getMinutes(), node: <div className="mchip" style={{ background: e.color || "#4285f4", color: inkFor(e.color || "#4285f4") }} onClick={(ev) => { ev.stopPropagation(); onEvent(e); }}><span className="mt">{pad(s.getHours())}:{pad(s.getMinutes())}</span>{e.summary}</div> });
+            const en = new Date(e.end);
+            const dayStart = startOfDay(d);
+            if (!eventOverlapsDay(s.getTime(), en.getTime(), dayStart.getTime())) return;
+            const startsToday = sameDay(s, d);
+            const label = startsToday ? `${pad(s.getHours())}:${pad(s.getMinutes())}` : "↪";
+            items.push({ key: `e:${e.account}:${e.calendarId}:${e.id}`, sort: startsToday ? s.getHours() * 60 + s.getMinutes() : 0, node: <div className="mchip" style={{ background: e.color || "#4285f4", color: inkFor(e.color || "#4285f4") }} onClick={(ev) => { ev.stopPropagation(); onEvent(e); }}><span className="mt">{label}</span>{e.summary}</div> });
           });
           tasksDue(d).forEach((t) => {
             const sort = t.dueTime ? minsOf(t.dueTime) : 1e6;
@@ -769,6 +785,7 @@ type PlanResp = {
   blocks: PlanBlock[];
   now: { kind: string; title: string; untilMs: number | null; note?: string } | null;
   warnings: string[];
+  generatedAt: number;
 };
 type Routine = {
   id: string; label: string; kind: string; days: string | null;
@@ -810,7 +827,7 @@ function PlanCard({ refreshKey }: { refreshKey: unknown }) {
   };
 
   if (!plan) return null;
-  const today = new Date(); today.setHours(23, 59, 59, 0);
+  const today = new Date(plan.generatedAt); today.setHours(23, 59, 59, 0);
   const todays = plan.blocks.filter((b) => b.startMs <= today.getTime()).slice(0, 6);
   return (
     <div className="card plancard">
@@ -841,7 +858,7 @@ function PlanCard({ refreshKey }: { refreshKey: unknown }) {
       )}
       <div className="planlist">
         {todays.map((b, i) => (
-          <div key={i} className={`planrow${b.kind === "deadline" ? " dl" : ""}${b.endMs <= Date.now() ? " past" : ""}`}>
+          <div key={i} className={`planrow${b.kind === "deadline" ? " dl" : ""}${b.endMs <= plan.generatedAt ? " past" : ""}`}>
             <span className="pt">{b.kind === "deadline" ? `${hmOf(b.startMs)} ⏰` : `${hmOf(b.startMs)}-${hmOf(b.endMs)}`}</span>
             <span className="pl">{b.title}</span>
           </div>

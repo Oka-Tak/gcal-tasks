@@ -32,8 +32,6 @@ function UsageModal({ onClose }: { onClose: () => void }) {
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    // fetch-then-set — false positive for this rule.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetch("/api/usage")
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then(setReport)

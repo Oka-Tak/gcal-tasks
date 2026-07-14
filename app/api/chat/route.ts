@@ -2,11 +2,13 @@ import { type NextRequest } from "next/server";
 import { auth } from "@/auth";
 import { listMessages, listThreadProposals, resolveThread, sendChat, type ChatFile } from "@/lib/chat";
 import { saveUploadImage } from "@/lib/logs";
+import { uploadSetError } from "@/lib/upload-limits";
 
 export const runtime = "nodejs";
 
 const MAX_FILE_BYTES = 30_000_000; // per attachment (images / PDF / text)
 const MAX_FILES = 4;
+const MAX_TOTAL_BYTES = 120_000_000;
 
 async function requireUser() {
   const session = await auth();
@@ -38,11 +40,9 @@ export async function POST(req: NextRequest) {
     );
     body.power = form.get("power") === "1";
     const raw = form.getAll("files").filter((f): f is File => f instanceof File);
-    if (raw.length > MAX_FILES)
-      return Response.json({ detail: `添付は${MAX_FILES}件までです` }, { status: 400 });
+    const uploadError = uploadSetError(raw, { maxFiles: MAX_FILES, maxFileBytes: MAX_FILE_BYTES, maxTotalBytes: MAX_TOTAL_BYTES });
+    if (uploadError) return Response.json({ detail: uploadError }, { status: 400 });
     for (const f of raw) {
-      if (f.size === 0 || f.size > MAX_FILE_BYTES)
-        return Response.json({ detail: `ファイルが空か大きすぎます: ${f.name}` }, { status: 400 });
       const abs = await saveUploadImage(Buffer.from(await f.arrayBuffer()), f.name || "file");
       files.push({ path: abs, name: f.name || "file" });
     }

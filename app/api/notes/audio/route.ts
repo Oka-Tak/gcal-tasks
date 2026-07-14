@@ -1,10 +1,13 @@
 import { type NextRequest } from "next/server";
 import { auth } from "@/auth";
 import { addAudiosToNote } from "@/lib/notes";
+import { uploadSetError } from "@/lib/upload-limits";
 
 export const runtime = "nodejs";
 
 const MAX_BYTES = 500_000_000;
+const MAX_FILES = 8;
+const MAX_TOTAL_BYTES = 500_000_000;
 
 /**
  * POST multipart {id, file×N, language×N} — 既存ノートに音源を追加する。
@@ -19,9 +22,8 @@ export async function POST(req: NextRequest) {
   if (typeof id !== "string" || !id) return Response.json({ detail: "id required" }, { status: 400 });
   const files = form.getAll("file").filter((f): f is File => f instanceof File);
   const langs = form.getAll("language").map((l) => (typeof l === "string" ? l : ""));
-  if (files.length === 0) return Response.json({ detail: "file required" }, { status: 400 });
-  if (files.some((f) => f.size === 0 || f.size > MAX_BYTES))
-    return Response.json({ detail: "file empty or too large" }, { status: 400 });
+  const uploadError = uploadSetError(files, { maxFiles: MAX_FILES, maxFileBytes: MAX_BYTES, maxTotalBytes: MAX_TOTAL_BYTES });
+  if (uploadError) return Response.json({ detail: uploadError }, { status: 400 });
 
   try {
     const ok = await addAudiosToNote(

@@ -24,7 +24,7 @@ Google カレンダー + Google Tasks を1画面に統合する個人専用ア�
   原理的制約。UI のタスク編集にも明記済み。時刻付きで他端末にも出したい用事は「予定（イベント）」で作る。
 - **単一「人」・複数 Google アカウント。** 利用者は1人。`accounts` テーブルに1アカウント1行、トークンは
   AES-256-GCM で暗号化（`lib/crypto.ts`、鍵は `KAIROS_ENC_KEY` を sha256 して32バイト化）。来訪者ごとの
-  セッションは無く、アクセス制御は前段（Cloudflare Access）+ `ALLOWED_EMAILS` に任せる。
+  セッションは無く、現在の本番は Tailscale Serve の tailnet 閉域 + `ALLOWED_EMAILS` でアクセスを制限する。
 - **認証は2層に分離。** (1) **アプリのログイン/セッション** = Auth.js（`auth.ts`、Google プロバイダ、
   JWT セッション、`signIn` コールバックで `ALLOWED_EMAILS` ゲート）。(2) **データ取得用の Google トークン**
   = 自前の `accounts` テーブル。ログイン時にそのアカウントを `jwt` コールバックでデータソースとして登録し、
@@ -63,14 +63,16 @@ local-only 列（`dueTime` / `remindAt` / `sortOrder` / `kanban`、加えて見�
   各ステージ分を持つ。睡眠は Xiaomi ウォッチのスクショを claude にビジョン抽出させて作る。**ローカルのみ**
   （Google ミラー無し＝設計判断。スマホには出ない）。
 - `agent_jobs` — ローカル CLI エージェント（claude/codex）呼び出しの台帳。全呼び出しを記録して履歴を
-  DB に残す（Proxmox Claude Code から読める）。**今はルート内でインライン実行**して結果を書き戻すが、
-  公開前にここを drain する**別プロセスのワーカー**へ移すための継ぎ目。
+  DB に残す（Proxmox Claude Code から読める）。挙動を後から再現・調査できるよう、プロンプト本文も
+  意図的に保存する（必要ならサイズ上限を設ける）。個人所有の単一ホスト内でインライン実行する現構成を維持する。
 - `chats` — タスク別（or 汎用）の AI 会話。CLI の `--resume` ではなく **DB を真実の源**にして全履歴を残す。
   `taskKey` = "account|tasklist|googleId"（null＝汎用）。
 - `proposals` — **エージェント提案の承認キュー**。チャットの返答に含まれる構造化アクション
   （create_task / update_task / create_event / update_event）を検証して保存し、UI の承認で初めて実行する。
-  status: pending → done / rejected / error。無効な提案も error として残す（可視化・デバッグ用）。
+  status: pending → running → done / rejected / error。無効な提案も error として残す（可視化・デバッグ用）。
   将来のメール下書き・リポジトリ修正などの agentic 実行もここに載せる設計。
+  これは**対話チャットの変更専用**であり、夜間のタスク推定・サブタスク自動分割などのバックグラウンド処理と、
+  経費画像のクイックキャプチャは既存ガードレールの下で直接書き込む。この二本立てを統合しないこと。
 
 ## API（すべて `await auth()` でゲート、`runtime=nodejs`）
 
@@ -170,26 +172,27 @@ local-only 列（`dueTime` / `remindAt` / `sortOrder` / `kanban`、加えて見�
 
 ## セキュリティ
 
-**公開時の認証は3層**（Cloudflare Tunnel で公開する前提。素の Tunnel 直公開はしない）:
-1. **Cloudflare Access**（エッジ）— Zero Trust でメール許可リスト。未認証はそもそも到達しない。
-2. **オリジン側の Access 強制**（`proxy.ts`、2026-07-03 実装）— `CF_ACCESS_TEAM_DOMAIN` +
-   `CF_ACCESS_AUD` を設定すると、全リクエストに有効な `Cf-Access-Jwt-Assertion`（JWKS 検証・
-   iss/aud 一致）を要求し、無ければ 403。**Tunnel の経路ミスや LAN からポート直叩きでも弾ける**。
-   env 未設定（dev）は完全に無効。模擬 JWKS で 403/403/200 の3ケース検証済み。
-3. **アプリ自身のログイン** — Auth.js の Google ログイン＋`ALLOWED_EMAILS`。全 API ルートが
-   `await auth()` でゲート済みなので、仮に上2層が破れても API は使えない。
-Proxmox では `next start` を **127.0.0.1 にバインド**して cloudflared だけが届く構成を推奨
-（`PORT=3000 HOSTNAME=127.0.0.1 npm run start`）。
+**現在の本番経路は Tailscale Serve の tailnet 閉域**。Proxmox では `next start` を
+**127.0.0.1 にバインド**し、Tailscale Serve だけを経由させる。アプリ自身も Auth.js の Google ログインと
+`ALLOWED_EMAILS` で制限し、全 API ルートを `await auth()` でゲートする。
+
+`proxy.ts` の Cloudflare Access 検証は旧構成との互換用で、`CF_ACCESS_TEAM_DOMAIN` と
+`CF_ACCESS_AUD` を設定した場合だけ有効になる。現在の本番では両方を未設定にする。未設定時を
+フェイルクローズにすると tailnet 内からも利用不能になるため、挙動を変更しないこと。
 
 `next.config.ts` の `headers()` で CSP / nosniff / Referrer-Policy / X-Frame-Options を全レスポンスに付与。
 CSP の `frame-ancestors` は `FRAME_ANCESTORS` 環境変数で可変（ダッシュボード埋め込み用）。CSP は inline の
 都合で `script-src`/`style-src` に `'unsafe-inline'` を許容している（残課題: nonce 化）。
 
-**エージェント実行の境界（公開前に必須）:** ルートから直接 `claude -p` を spawn しているため、**公開すると
-カレンダー/画像由来のプロンプトインジェクションでツール付きエージェントが暴走しうる**。現状の緩和は
-(1) 抽出は `--allowedTools Read` に限定、(2) `--permission-mode default`（bypass しない）。**公開（Cloudflare）
-前にやること**: `agent_jobs` を drain する**別プロセスのローカルワーカー**へ実行を移し web から spawn しない、
-カレンダー書き込みは必ず人間確認、`--dangerously-skip-permissions` は絶対に使わない。
+**エージェント実行の境界:** CLI 子プロセスには必要な `HOME` / `PATH` / `CLAUDE_CONFIG_DIR` / 各CLIの
+認証ディレクトリを残した allowlist 環境だけを渡し、アプリや OAuth の秘密は引き継がない。抽出処理は
+`--allowedTools Read`、通常処理は `--permission-mode default`（bypass しない）を維持する。
+別OSユーザー・コンテナ・永続ワーカーへの分離は、個人所有・単一ホスト・tailnet閉域の現在構成では要件外。
+将来インターネット公開または複数利用者対応へ変える場合に、改めて境界分離を設計する。
+
+対話チャット由来の予定・タスク変更は proposals の確認を通す。一方、利用者が明示的に自動化を求めた
+夜間の推定・自動分割とクイックキャプチャは直接書き込みを維持し、手動値を上書きしない・件数上限・
+二重実行防止・処理済みマーク等の個別ガードレールで守る。
 
 ## 落とし穴
 
@@ -219,8 +222,7 @@ CSP の `frame-ancestors` は `FRAME_ANCESTORS` 環境変数で可変（ダッ�
    モバイルは 82vw 列の横スクロール snap。update_task アクションでも kanban を動かせる）。
 5. **Gmail 下書き連携** — スコープ追加＋再同意が必要。送信はせず**下書き作成まで**（承認は Gmail 側で）。
 
-最終的に Proxmox の個人ダッシュボードへ移設予定（この環境は dev）。公開前にエージェント実行を
-別プロセスワーカーへ移す（セキュリティ節を参照）。
+Proxmox の個人ダッシュボードへ移設し、現在は Tailscale Serve の tailnet 閉域で運用している。
 
 ## 次の候補（ロードマップ外・要相談）
 

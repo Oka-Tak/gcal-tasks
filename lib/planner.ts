@@ -2,6 +2,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { db } from "./db";
 import { events, tasks } from "./db/schema";
 import { dayMatches, listRoutines } from "./routines";
+import { parentTaskIdentity, taskIdentity } from "./task-identity";
 
 /**
  * プランナー: 予定（Google カレンダー）と生活ルーチンで埋まっていない
@@ -124,14 +125,15 @@ export function buildPlan(horizonDays = 3): PlanResult {
   type Row = (typeof allOpen)[0];
   const kids = new Map<string, Row[]>();
   for (const t of allOpen) {
-    if (!t.parent) continue;
-    (kids.get(t.parent) ?? kids.set(t.parent, []).get(t.parent)!).push(t);
+    const parentKey = parentTaskIdentity(t);
+    if (!parentKey) continue;
+    (kids.get(parentKey) ?? kids.set(parentKey, []).get(parentKey)!).push(t);
   }
   interface WorkItem { title: string; estMin: number; dueYmd: string | null; dueTime: string | null; asap: boolean; priority: number; taskKey: string; seq: number }
   const items: WorkItem[] = [];
   for (const t of allOpen) {
     if (t.parent || (!t.asap && !t.due)) continue;
-    const children = (kids.get(t.googleId) ?? []).sort((a, b) => (a.position ?? "").localeCompare(b.position ?? ""));
+    const children = (kids.get(taskIdentity(t)) ?? []).sort((a, b) => (a.position ?? "").localeCompare(b.position ?? ""));
     if (children.length > 0) {
       children.forEach((c, i) =>
         items.push({
@@ -141,7 +143,7 @@ export function buildPlan(horizonDays = 3): PlanResult {
           dueTime: c.due ? c.dueTime : t.dueTime,
           asap: !!(c.asap || t.asap),
           priority: c.priority ?? t.priority ?? 0,
-          taskKey: `${c.account}|${c.tasklist}|${c.googleId}`,
+          taskKey: taskIdentity(c),
           seq: i,
         }),
       );
@@ -153,14 +155,14 @@ export function buildPlan(horizonDays = 3): PlanResult {
         dueTime: t.dueTime,
         asap: !!t.asap,
         priority: t.priority ?? 0,
-        taskKey: `${t.account}|${t.tasklist}|${t.googleId}`,
+        taskKey: taskIdentity(t),
         seq: 0,
       });
     }
   }
   const key = (w: WorkItem) =>
     `${w.asap ? "0" : "1"}|${w.dueYmd ? `${w.dueYmd}T${w.dueTime ?? "23:59"}` : "9999"}|${9 - w.priority}|${String(w.seq).padStart(3, "0")}`;
-  items.sort((a, b) => (key(a) < key(b) ? -1 : 1));
+  items.sort((a, b) => key(a).localeCompare(key(b)));
 
   const blocks: PlanBlock[] = [];
   const warnings: string[] = [];

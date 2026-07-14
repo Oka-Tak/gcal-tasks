@@ -7,6 +7,7 @@ import { calendarFor } from "@/lib/google";
 import { syncAllEvents } from "@/lib/sync";
 import { serializeEvent } from "@/lib/serialize";
 import { createEvent, updateEvent } from "@/lib/mutations";
+import { InputError } from "@/lib/write-validation";
 
 export const runtime = "nodejs";
 
@@ -23,11 +24,13 @@ export async function GET(req: NextRequest) {
   const timeMax = sp.get("timeMax");
   if (!timeMin || !timeMax)
     return Response.json({ detail: "timeMin/timeMax required" }, { status: 400 });
+  const winMin = Date.parse(timeMin);
+  const winMax = Date.parse(timeMax);
+  if (!Number.isFinite(winMin) || !Number.isFinite(winMax) || winMin >= winMax)
+    return Response.json({ detail: "invalid time range" }, { status: 400 });
 
   await syncAllEvents(timeMin, timeMax);
 
-  const winMin = Date.parse(timeMin);
-  const winMax = Date.parse(timeMax);
   const rows = db
     .select()
     .from(events)
@@ -45,8 +48,13 @@ export async function POST(req: NextRequest) {
   if (!body.account || !body.calendarId)
     return Response.json({ detail: "account/calendarId required" }, { status: 400 });
 
-  const created = await createEvent(body);
-  return Response.json({ id: created.id });
+  try {
+    const created = await createEvent(body);
+    return Response.json({ id: created.id });
+  } catch (e) {
+    if (e instanceof InputError) return Response.json({ detail: e.message }, { status: 400 });
+    throw e;
+  }
 }
 
 export async function PATCH(req: NextRequest) {
@@ -56,8 +64,13 @@ export async function PATCH(req: NextRequest) {
   if (!body.account || !body.calendarId || !body.id)
     return Response.json({ detail: "account/calendarId/id required" }, { status: 400 });
 
-  await updateEvent(body);
-  return Response.json({ ok: true });
+  try {
+    await updateEvent(body);
+    return Response.json({ ok: true });
+  } catch (e) {
+    if (e instanceof InputError) return Response.json({ detail: e.message }, { status: 400 });
+    throw e;
+  }
 }
 
 export async function DELETE(req: NextRequest) {

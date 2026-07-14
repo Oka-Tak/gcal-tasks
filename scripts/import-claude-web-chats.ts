@@ -24,7 +24,7 @@ const load = async (): Promise<State> => { try { return JSON.parse(await fs.read
 const save = async (s: State) => { await fs.mkdir(path.dirname(STATE), { recursive: true }); await fs.writeFile(STATE, JSON.stringify(s, null, 1)); };
 
 let token = "";
-async function api(method: string, p: string, body?: unknown): Promise<any> {
+async function api(method: string, p: string, body?: unknown): Promise<unknown> {
   const r = await fetch(`${OWUI}${p}`, {
     method,
     headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body ? { "Content-Type": "application/json" } : {}) },
@@ -81,7 +81,7 @@ function buildChat(c: { name?: string; uuid: string; timestamp?: string; chat_me
 async function main() {
   const src = process.argv[2];
   if (!src) { console.error("usage: import-claude-web-chats.ts <extracted-export-dir>"); process.exit(1); }
-  token = (await api("POST", "/api/v1/auths/signin", { email: "", password: "" })).token;
+  token = ((await api("POST", "/api/v1/auths/signin", { email: "", password: "" })) as { token: string }).token;
   const state = await load();
   const folderId = await getFolderId();
   const convs = JSON.parse(await fs.readFile(path.join(src, "conversations.json"), "utf8")) as Parameters<typeof buildChat>[0][];

@@ -4,6 +4,7 @@ import { db } from "./db";
 import { calendars, events, tasklists, tasks } from "./db/schema";
 import { calendarFor, tasksFor } from "./google";
 import { listAccounts } from "./accounts";
+import { collectGooglePages } from "./google-pagination";
 
 /**
  * The mirror sync. Google is the source of truth for its own fields, so each
@@ -34,8 +35,11 @@ function meetOf(e: calendar_v3.Schema$Event): string | null {
 export async function syncCalendars(email: string): Promise<void> {
   const runTs = Date.now();
   const cal = calendarFor(email);
-  const res = await cal.calendarList.list();
-  for (const c of res.data.items ?? []) {
+  const items = await collectGooglePages<calendar_v3.Schema$CalendarListEntry>(async (pageToken) => {
+    const res = await cal.calendarList.list({ pageToken });
+    return res.data;
+  });
+  for (const c of items) {
     if (!c.id) continue;
     const row = {
       account: email,
@@ -162,8 +166,10 @@ export async function syncEvents(
 export async function syncTasklists(email: string): Promise<tasks_v1.Schema$TaskList[]> {
   const runTs = Date.now();
   const api = tasksFor(email);
-  const res = await api.tasklists.list({ maxResults: 100 });
-  const items = res.data.items ?? [];
+  const items = await collectGooglePages<tasks_v1.Schema$TaskList>(async (pageToken) => {
+    const res = await api.tasklists.list({ maxResults: 100, pageToken });
+    return res.data;
+  });
   for (const l of items) {
     if (!l.id) continue;
     const row = {
@@ -197,13 +203,17 @@ export async function syncTasklists(email: string): Promise<tasks_v1.Schema$Task
 export async function syncTasks(email: string, tasklistId: string): Promise<void> {
   const runTs = Date.now();
   const api = tasksFor(email);
-  const res = await api.tasks.list({
-    tasklist: tasklistId,
-    showCompleted: true,
-    showHidden: true,
-    maxResults: 100,
+  const items = await collectGooglePages<tasks_v1.Schema$Task>(async (pageToken) => {
+    const res = await api.tasks.list({
+      tasklist: tasklistId,
+      showCompleted: true,
+      showHidden: true,
+      maxResults: 100,
+      pageToken,
+    });
+    return res.data;
   });
-  for (const t of res.data.items ?? []) {
+  for (const t of items) {
     if (!t.id) continue;
     // Only Google-owned fields here. Local-only columns (dueTime, remindAt,
     // sortOrder) are intentionally absent from the conflict set so they survive.

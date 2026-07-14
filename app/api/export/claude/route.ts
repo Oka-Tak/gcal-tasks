@@ -5,6 +5,7 @@ import { events, tasks } from "@/lib/db/schema";
 import { glossaryBlock } from "@/lib/glossary";
 import { buildPlan } from "@/lib/planner";
 import { listRoutines } from "@/lib/routines";
+import { parentTaskIdentity, taskIdentity } from "@/lib/task-identity";
 
 export const runtime = "nodejs";
 
@@ -47,7 +48,8 @@ export async function GET() {
     .all();
   const parents = open.filter((t) => !t.parent && (t.asap || t.due))
     .sort((a, b) => (a.due ?? "9999").localeCompare(b.due ?? "9999"));
-  const kidsOf = (id: string) => open.filter((c) => c.parent === id);
+  const kidsOf = (parent: (typeof open)[number]) =>
+    open.filter((child) => parentTaskIdentity(child) === taskIdentity(parent));
 
   const plan = buildPlan(2);
   const routines = listRoutines().filter((r) => r.active);
@@ -64,7 +66,7 @@ export async function GET() {
     "# 未完了タスク（締切順、⚡=ASAP、P=優先度、分=見積り）",
     ...parents.slice(0, 25).flatMap((t) => {
       const head = `- ${t.asap ? "⚡" : ""}${t.due ? `${t.due.slice(5, 10).replace("-", "/")}${t.dueTime ? ` ${t.dueTime}` : ""}締切 ` : ""}${t.title ?? ""}${t.priority ? ` [P${t.priority}]` : ""}${t.estimatedMin ? ` [${t.estimatedMin}分]` : ""}`;
-      return [head, ...kidsOf(t.googleId).map((c) => `    - ${c.status === "completed" ? "✅" : "□"} ${c.title ?? ""}${c.estimatedMin ? ` [${c.estimatedMin}分]` : ""}`)];
+      return [head, ...kidsOf(t).map((c) => `    - ${c.status === "completed" ? "✅" : "□"} ${c.title ?? ""}${c.estimatedMin ? ` [${c.estimatedMin}分]` : ""}`)];
     }),
     "",
     "# 今日〜明日のプラン（空き時間へのタスク自動割り当て）",

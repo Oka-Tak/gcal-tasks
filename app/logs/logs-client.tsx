@@ -98,7 +98,7 @@ function TimerCard({ onSaved }: { onSaved: () => void }) {
   const [running, setRunning] = useState<{ startMs: number; kind: string; title: string } | null>(null);
   const [kind, setKind] = useState("work");
   const [title, setTitle] = useState("");
-  const [now, setNow] = useState(Date.now());
+  const [now, setNow] = useState(0);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -124,6 +124,7 @@ function TimerCard({ onSaved }: { onSaved: () => void }) {
   const start = () => {
     const t = { startMs: Date.now(), kind, title: title.trim() };
     localStorage.setItem(TIMER_KEY, JSON.stringify(t));
+    setNow(t.startMs);
     setRunning(t);
   };
   const discard = () => {

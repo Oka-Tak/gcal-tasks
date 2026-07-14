@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { agentChildEnv } from "./agent-env";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -142,7 +143,7 @@ async function copilotQuota(): Promise<AgentQuota> {
   try {
     const out = await withTimeout(
       new Promise<string>((resolve, reject) => {
-        const child = spawn("gh", ["api", "/copilot_internal/user"], { env: process.env });
+        const child = spawn("gh", ["api", "/copilot_internal/user"], { env: agentChildEnv() });
         let stdout = "", stderr = "";
         child.stdout.on("data", (d) => (stdout += d));
         child.stderr.on("data", (d) => (stderr += d));

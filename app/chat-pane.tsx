@@ -293,7 +293,7 @@ export function ChatPane({ thread, taskKey, autoMessage, emptyHint, onExecuted, 
       setBusy(false);
       setLiveLog([]);
     }
-  }, [busy, thread, taskKey, agent, model, effort, load, onActivity]);
+  }, [busy, thread, taskKey, agent, model, effort, power, load, onActivity]);
 
   useEffect(() => {
     if (!loaded || !autoMessage || autoSent.current || busy) return;

@@ -5,6 +5,7 @@ import { db } from "./db";
 import { expenses } from "./db/schema";
 import { extractJson, runAgent } from "./agent";
 import { CATEGORY_LABEL, EXPENSE_CATEGORIES, isExpenseCategory } from "./money-shared";
+import { InputError } from "./write-validation";
 
 /**
  * お金管理（軽量ログ型）: クイック入力・レシート/決済スクショのAI取り込み・
@@ -45,11 +46,16 @@ export function createExpense(e: {
   source?: string | null;
   imagePath?: string | null;
 }): ExpenseView {
+  if (!Number.isFinite(e.amountYen) || e.amountYen === 0 || Math.abs(e.amountYen) > 10_000_000) {
+    throw new InputError("amountYen must be a non-zero number up to 10,000,000");
+  }
+  if (!isExpenseCategory(e.category)) throw new InputError("invalid expense category");
+  if (e.whenMs != null && (!Number.isFinite(e.whenMs) || e.whenMs < 0)) throw new InputError("invalid whenMs");
   const now = Date.now();
   const row: typeof expenses.$inferInsert = {
     id: crypto.randomUUID(),
     amountYen: Math.round(e.amountYen),
-    category: isExpenseCategory(e.category) ? e.category : "other",
+    category: e.category,
     title: e.title?.slice(0, 200) ?? null,
     note: e.note?.slice(0, 2000) ?? null,
     whenMs: e.whenMs ?? now,
@@ -66,6 +72,11 @@ export function updateExpense(id: string, patch: {
   amountYen?: number; category?: string; title?: string | null;
   note?: string | null; whenMs?: number;
 }): void {
+  if (patch.amountYen !== undefined && (!Number.isFinite(patch.amountYen) || patch.amountYen === 0 || Math.abs(patch.amountYen) > 10_000_000)) {
+    throw new InputError("amountYen must be a non-zero number up to 10,000,000");
+  }
+  if (patch.category !== undefined && !isExpenseCategory(patch.category)) throw new InputError("invalid expense category");
+  if (patch.whenMs !== undefined && (!Number.isFinite(patch.whenMs) || patch.whenMs < 0)) throw new InputError("invalid whenMs");
   db.update(expenses)
     .set({
       ...(patch.amountYen != null && { amountYen: Math.round(patch.amountYen) }),

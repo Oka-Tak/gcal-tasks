@@ -2,12 +2,13 @@ import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lt } from "drizzle-orm";
 import { db } from "./db";
 import { events, noteAudios, notes } from "./db/schema";
 import { env } from "./env";
-import { runAgent, runAgentAuto } from "./agent";
-import { pushNoteToOwui } from "./owui";
+import { runAgentAuto } from "./agent";
+import { agentChildEnv } from "./agent-env";
+import { pushNoteToOwui, removeOwuiFile } from "./owui";
 import { dateFromTitle, exportNoteFiles, inferCourseNotebook, removeExportedFiles, resolveNoteDir } from "./notes-export";
 
 /**
@@ -39,6 +40,7 @@ async function bindToResolvedFolder(noteId: string, notebook: string | null, eve
 
 const AUDIO_SUBDIR = "audio";
 export const AUDIO_EXT = new Set([".mp3", ".m4a", ".wav", ".ogg", ".opus", ".flac", ".aac", ".webm", ".mp4"]);
+const STALE_PROCESSING_MS = Math.max(env.transcribeTimeoutMs + 5 * 60_000, 30 * 60_000);
 
 export interface NoteAudioView {
   id: string;
@@ -90,6 +92,7 @@ function view(r: NoteRow, audios?: AudioRow[]): NoteView {
 }
 
 export function listNotes(eventKey?: string | null): NoteView[] {
+  recoverStaleNotes();
   const rows = eventKey
     ? db.select().from(notes).where(eq(notes.eventKey, eventKey)).orderBy(desc(notes.createdAt)).all()
     : db.select().from(notes).where(isNull(notes.deletedAt)).orderBy(desc(notes.createdAt)).all();
@@ -97,6 +100,7 @@ export function listNotes(eventKey?: string | null): NoteView[] {
 }
 
 export function getNote(id: string): NoteView | null {
+  recoverStaleNotes();
   const r = db.select().from(notes).where(eq(notes.id, id)).get();
   return r && !r.deletedAt ? view(r) : null;
 }
@@ -126,12 +130,40 @@ export function updateNote(id: string, patch: { title?: string; content?: string
 }
 
 export function softDeleteNote(id: string) {
+  const row = db.select().from(notes).where(eq(notes.id, id)).get();
+  if (!row || row.deletedAt) return;
+  const audios = audioRows(id);
   db.update(notes).set({ deletedAt: Date.now() }).where(eq(notes.id, id)).run();
+  db.delete(noteAudios).where(eq(noteAudios.noteId, id)).run();
+  rerun.delete(id);
   void removeExportedFiles(id).catch(() => {});
+  void Promise.all([
+    ...new Set([row.audioPath, ...audios.map((audio) => audio.audioPath)].filter((p): p is string => !!p)),
+  ].map((audioPath) => fs.rm(audioPath, { force: true }).catch(() => {})));
+  if (row.owuiFileId) {
+    const notebook = row.notebook ?? notebookFor(null, row.eventKey) ?? "Kairos ノート";
+    void removeOwuiFile(notebook, row.owuiFileId).catch(() => {});
+  }
 }
 
 function setStatus(id: string, status: string, patch: Partial<typeof notes.$inferInsert> = {}) {
-  db.update(notes).set({ status, updatedAt: Date.now(), ...patch }).where(eq(notes.id, id)).run();
+  db.update(notes)
+    .set({ status, updatedAt: Date.now(), ...patch })
+    .where(and(eq(notes.id, id), isNull(notes.deletedAt)))
+    .run();
+}
+
+/** Mark detached work abandoned by a process restart as retryable error. */
+export function recoverStaleNotes(now = Date.now()): number {
+  const result = db.update(notes)
+    .set({ status: "error", error: "処理中にサーバーが停止しました。再実行してください。", updatedAt: now })
+    .where(and(
+      isNull(notes.deletedAt),
+      inArray(notes.status, ["transcribing", "summarizing"]),
+      lt(notes.updatedAt, now - STALE_PROCESSING_MS),
+    ))
+    .run();
+  return result.changes;
 }
 
 /**
@@ -192,7 +224,7 @@ function runWhisperx(audioAbs: string, outDir: string, language = "ja"): Promise
     ];
     let child;
     try {
-      child = spawn(env.whisperxBin, args, { env: process.env, stdio: ["ignore", "ignore", "pipe"] });
+      child = spawn(env.whisperxBin, args, { env: agentChildEnv(), stdio: ["ignore", "ignore", "pipe"] });
     } catch (e) {
       resolve({ ok: false, err: String(e) });
       return;
@@ -372,6 +404,8 @@ export async function summarizeAndPublish(
   notebook: string | null,
   transcript: string,
 ): Promise<void> {
+  const active = db.select({ id: notes.id }).from(notes).where(and(eq(notes.id, noteId), isNull(notes.deletedAt))).get();
+  if (!active) return;
   setStatus(noteId, "summarizing", transcript ? { transcript } : {});
   const materialsText = await import("./folder-notes")
     .then((m) => m.folderMaterialsText(noteId))
@@ -390,6 +424,8 @@ export async function summarizeAndPublish(
     setStatus(noteId, "error", { error: `要約失敗: ${res.error}`, jobId: res.jobId });
     return;
   }
+  const stillActive = db.select({ id: notes.id }).from(notes).where(and(eq(notes.id, noteId), isNull(notes.deletedAt))).get();
+  if (!stillActive) return;
   const content = res.text.trim().slice(0, 200_000);
   // 分類も予定も無いノートはタイトルから授業を推定（「地震防災0711」→講義: 地震防災）。
   // これが決まると OWUI の棚もフォルダ書き出し先も授業に揃う。

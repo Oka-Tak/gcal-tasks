@@ -1,6 +1,7 @@
 import { type NextRequest } from "next/server";
 import { env } from "@/lib/env";
 import { importGakujoAssignments, importGakujoStructured } from "@/lib/gakujo-import";
+import { secretMatches } from "@/lib/secret-compare";
 
 export const runtime = "nodejs";
 
@@ -36,7 +37,7 @@ export async function POST(req: NextRequest) {
   } catch {
     return new Response(JSON.stringify({ detail: "invalid json" }), { status: 400, headers });
   }
-  if (!env.widgetToken || body.token !== env.widgetToken)
+  if (!secretMatches(body.token ?? "", env.widgetToken))
     return new Response(JSON.stringify({ detail: "unauthorized" }), { status: 401, headers });
 
   // 構造化データ（ユーザースクリプトの決定論パース）優先。無ければテキストをAI抽出。

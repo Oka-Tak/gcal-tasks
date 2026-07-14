@@ -484,11 +484,16 @@ export async function decideProposal(
   if (row.status !== "pending") throw new Error(`proposal is already ${row.status}`);
 
   if (decision === "reject") {
-    db.update(proposals)
-      .set({ status: "rejected", decidedAt: Date.now() })
-      .where(eq(proposals.id, id))
+    const decidedAt = Date.now();
+    const claimed = db.update(proposals)
+      .set({ status: "rejected", decidedAt })
+      .where(and(eq(proposals.id, id), eq(proposals.status, "pending")))
       .run();
-    return viewOf({ ...row, status: "rejected", decidedAt: Date.now() });
+    if (claimed.changes !== 1) {
+      const current = db.select({ status: proposals.status }).from(proposals).where(eq(proposals.id, id)).get();
+      throw new Error(`proposal is already ${current?.status ?? "missing"}`);
+    }
+    return viewOf({ ...row, status: "rejected", decidedAt });
   }
 
   let payload: unknown;
@@ -498,17 +503,38 @@ export async function decideProposal(
     payload = null;
   }
   const v = validateAction({ ...(payload as Raw), kind: row.kind, summary: row.summary });
-  let patch: Partial<ProposalRow>;
   if (!v.ok) {
-    patch = { status: "error", error: v.error, decidedAt: Date.now() };
-  } else {
-    try {
-      const result = await runAction(v.kind, v.payload);
-      patch = { status: "done", result: JSON.stringify(result ?? null), decidedAt: Date.now() };
-    } catch (e) {
-      patch = { status: "error", error: String(e).slice(0, 2000), decidedAt: Date.now() };
+    const patch = { status: "error", error: v.error, decidedAt: Date.now() } as const;
+    const updated = db.update(proposals)
+      .set(patch)
+      .where(and(eq(proposals.id, id), eq(proposals.status, "pending")))
+      .run();
+    if (updated.changes !== 1) {
+      const current = db.select({ status: proposals.status }).from(proposals).where(eq(proposals.id, id)).get();
+      throw new Error(`proposal is already ${current?.status ?? "missing"}`);
     }
+    return viewOf({ ...row, ...patch });
   }
-  db.update(proposals).set(patch).where(eq(proposals.id, id)).run();
+
+  const claimed = db.update(proposals)
+    .set({ status: "running", error: null })
+    .where(and(eq(proposals.id, id), eq(proposals.status, "pending")))
+    .run();
+  if (claimed.changes !== 1) {
+    const current = db.select({ status: proposals.status }).from(proposals).where(eq(proposals.id, id)).get();
+    throw new Error(`proposal is already ${current?.status ?? "missing"}`);
+  }
+
+  let patch: Partial<ProposalRow>;
+  try {
+    const result = await runAction(v.kind, v.payload);
+    patch = { status: "done", result: JSON.stringify(result ?? null), decidedAt: Date.now() };
+  } catch (e) {
+    patch = { status: "error", error: String(e).slice(0, 2000), decidedAt: Date.now() };
+  }
+  db.update(proposals)
+    .set(patch)
+    .where(and(eq(proposals.id, id), eq(proposals.status, "running")))
+    .run();
   return viewOf({ ...row, ...patch });
 }

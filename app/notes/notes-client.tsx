@@ -740,10 +740,10 @@ export default function NotesClient() {
 
   useEffect(() => {
     // "/notes?open=<id>" (from an event's note list) opens that note directly.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     const o = new URLSearchParams(window.location.search).get("open");
-    if (o) setOpen(o);
-    void reload();
+    if (o) queueMicrotask(() => setOpen(o));
+    const timer = window.setTimeout(() => void reload(), 0);
+    return () => window.clearTimeout(timer);
   }, [reload]);
 
   // poll while anything is in-flight

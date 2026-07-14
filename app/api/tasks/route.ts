@@ -8,6 +8,7 @@ import { listAccounts } from "@/lib/accounts";
 import { syncTasklists, syncTasks } from "@/lib/sync";
 import { serializeTask } from "@/lib/serialize";
 import { createTask, updateTask } from "@/lib/mutations";
+import { InputError } from "@/lib/write-validation";
 
 export const runtime = "nodejs";
 
@@ -46,8 +47,13 @@ export async function POST(req: NextRequest) {
   if (!body.account || !body.tasklist)
     return Response.json({ detail: "account/tasklist required" }, { status: 400 });
 
-  const created = await createTask(body);
-  return Response.json({ id: created.id });
+  try {
+    const created = await createTask(body);
+    return Response.json({ id: created.id });
+  } catch (e) {
+    if (e instanceof InputError) return Response.json({ detail: e.message }, { status: 400 });
+    throw e;
+  }
 }
 
 export async function PATCH(req: NextRequest) {
@@ -57,8 +63,13 @@ export async function PATCH(req: NextRequest) {
   if (!body.account || !body.tasklist || !body.id)
     return Response.json({ detail: "account/tasklist/id required" }, { status: 400 });
 
-  await updateTask(body);
-  return Response.json({ ok: true });
+  try {
+    await updateTask(body);
+    return Response.json({ ok: true });
+  } catch (e) {
+    if (e instanceof InputError) return Response.json({ detail: e.message }, { status: 400 });
+    throw e;
+  }
 }
 
 export async function DELETE(req: NextRequest) {

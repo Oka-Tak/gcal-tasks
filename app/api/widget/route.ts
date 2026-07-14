@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { events, expenses, logs, tasks } from "@/lib/db/schema";
 import { env } from "@/lib/env";
+import { secretMatches } from "@/lib/secret-compare";
 
 export const runtime = "nodejs";
 
@@ -21,7 +22,7 @@ const hm = (ms: number) => {
 
 export async function GET(req: NextRequest) {
   const token = new URL(req.url).searchParams.get("token") ?? "";
-  if (!env.widgetToken || token !== env.widgetToken)
+  if (!secretMatches(token, env.widgetToken))
     return Response.json({ detail: "unauthorized" }, { status: 401 });
 
   const now = new Date();

@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { and, eq, isNull, like } from "drizzle-orm";
+import { and, isNull, like } from "drizzle-orm";
 import { db } from "./db";
 import { tasklists, tasks } from "./db/schema";
 import { runAgentAuto, extractJson } from "./agent";

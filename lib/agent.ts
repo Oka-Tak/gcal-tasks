@@ -8,6 +8,7 @@ import { agentJobs } from "./db/schema";
 import { env } from "./env";
 import { type AgentName, type AgentUsage } from "./agents-catalog";
 import { claudeAccounts, pickClaudeDir } from "./claude-pool";
+import { agentChildEnv } from "./agent-env";
 
 /**
  * Thin wrapper around the LOCAL CLI agents (claude / codex / copilot / agy).
@@ -15,9 +16,9 @@ import { claudeAccounts, pickClaudeDir } from "./claude-pool";
  * The prompt is passed on stdin (argv for agy) and arguments are an argv array —
  * never a shell string — so user/Google content can't be interpreted by a shell.
  *
- * Today these run inline in the request. Before publishing (Cloudflare), move the
- * actual spawn into a separate local worker that drains `agent_jobs`; the table is
- * the seam for that. See CONTEXT.md.
+ * These run inline on the user's single, tailnet-only host. `agent_jobs` keeps the
+ * audit/debug history; process separation can be reconsidered if the deployment
+ * becomes internet-facing or multi-user.
  */
 
 export type { AgentName } from "./agents-catalog";
@@ -61,7 +62,7 @@ function spawnCapture(
     try {
       child = spawn(bin, args, {
         cwd: opts.cwd,
-        env: { ...process.env, ...(opts.env ?? {}) },
+        env: agentChildEnv(process.env, opts.env),
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (e) {
@@ -148,7 +149,7 @@ function spawnClaudeStream(
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(bin, args, { cwd: opts.cwd, env: { ...process.env, ...(opts.env ?? {}) }, stdio: ["pipe", "pipe", "pipe"] });
+      child = spawn(bin, args, { cwd: opts.cwd, env: agentChildEnv(process.env, opts.env), stdio: ["pipe", "pipe", "pipe"] });
     } catch (e) {
       resolve({ code: -1, stdout: "", stderr: String(e), timedOut: false });
       return;
@@ -218,7 +219,7 @@ function spawnCodexStream(
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(bin, args, { cwd: opts.cwd, env: { ...process.env, ...(opts.env ?? {}) }, stdio: ["pipe", "pipe", "pipe"] });
+      child = spawn(bin, args, { cwd: opts.cwd, env: agentChildEnv(process.env, opts.env), stdio: ["pipe", "pipe", "pipe"] });
     } catch (e) {
       resolve({ code: -1, stdout: "", stderr: String(e), timedOut: false });
       return;

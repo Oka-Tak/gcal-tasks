@@ -17,7 +17,7 @@ RUN npm run build
 
 FROM node:20-bookworm-slim AS run
 WORKDIR /app
-ENV NODE_ENV=production
+ENV NODE_ENV=production TZ=Asia/Tokyo
 COPY --from=build /app/.next ./.next
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/drizzle ./drizzle

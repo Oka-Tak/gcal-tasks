@@ -8,6 +8,7 @@ import { pushEnabled, sendPush } from "./notify";
 import { muteMatcher } from "./notify-mute";
 import { checkMorningBriefing } from "./briefing";
 import { enrichTasks } from "./task-enrich";
+import { parentTaskIdentity, taskIdentity } from "./task-identity";
 
 /**
  * Hourly proactive nudges (ntfy), on top of the explicit remindAt reminders:
@@ -76,7 +77,7 @@ export async function checkNudges(): Promise<number> {
   }
 
   // 2) big task without subtasks → suggest splitting
-  const parentIds = new Set(open.map((t) => t.parent).filter(Boolean));
+  const parentIds = new Set(open.map(parentTaskIdentity).filter((key): key is string => !!key));
   let splits = 0;
   for (const t of open) {
     if (splits >= SPLIT_MAX_PER_TICK) break;
@@ -84,7 +85,7 @@ export async function checkNudges(): Promise<number> {
     if (t.parent) continue; // subtasks don't nudge
     if ((t.estimatedMin ?? 0) < SPLIT_MIN_ESTIMATE) continue;
     if (t.splitNudgedAt != null) continue;
-    if (parentIds.has(t.googleId)) continue; // already split
+    if (parentIds.has(taskIdentity(t))) continue; // already split
     const r = await sendPush({
       title: `✂️ タスクを区切りませんか: ${t.title || "タスク"}`,
       message: `見積り${t.estimatedMin}分の大きめタスクです。サブタスクに分割すると着手しやすくなります。AIタブで「分割して」と相談すると案を出します`,

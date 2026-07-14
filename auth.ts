@@ -5,7 +5,7 @@ import { upsertAccountFromOAuth } from "@/lib/accounts";
 
 /**
  * Auth.js handles the app login/session (who may use Kairos), gated by
- * ALLOWED_EMAILS as defence in depth behind Cloudflare Access. The Google
+ * ALLOWED_EMAILS as the application-level gate behind the tailnet boundary. The Google
  * data-source tokens are stored in our own `accounts` table (see lib/accounts),
  * seeded here from the login grant — additional accounts attach via
  * /api/connect/google.

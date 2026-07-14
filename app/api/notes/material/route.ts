@@ -7,10 +7,13 @@ import { addMaterial } from "@/lib/materials";
 import { bindNoteToFolder, folderOfNoteSync } from "@/lib/folder-notes";
 import { eventStartMs, notebookFor, summarizeAndPublish } from "@/lib/notes";
 import { dateFromTitle, resolveNoteDir } from "@/lib/notes-export";
+import { uploadSetError } from "@/lib/upload-limits";
 
 export const runtime = "nodejs";
 
 const MAX_BYTES = 50_000_000;
+const MAX_FILES = 8;
+const MAX_TOTAL_BYTES = 200_000_000;
 
 /**
  * POST multipart {id, file×N} — 既存ノートに資料（pdf/pptx等）を後付けする。
@@ -25,9 +28,8 @@ export async function POST(req: NextRequest) {
   const id = form.get("id");
   if (typeof id !== "string" || !id) return Response.json({ detail: "id required" }, { status: 400 });
   const files = form.getAll("file").filter((f): f is File => f instanceof File);
-  if (files.length === 0) return Response.json({ detail: "file required" }, { status: 400 });
-  if (files.some((f) => f.size === 0 || f.size > MAX_BYTES))
-    return Response.json({ detail: "file empty or too large (50MBまで)" }, { status: 400 });
+  const uploadError = uploadSetError(files, { maxFiles: MAX_FILES, maxFileBytes: MAX_BYTES, maxTotalBytes: MAX_TOTAL_BYTES });
+  if (uploadError) return Response.json({ detail: uploadError }, { status: 400 });
 
   const r = db.select().from(notes).where(eq(notes.id, id)).get();
   if (!r || r.deletedAt) return Response.json({ detail: "ノートが見つかりません" }, { status: 404 });

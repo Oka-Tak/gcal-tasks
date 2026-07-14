@@ -57,7 +57,7 @@ async function build() {
   let d;
   try {
     d = await fetchData();
-  } catch (e) {
+  } catch {
     const t = w.addText("Kairos に届きません");
     t.textColor = COLORS.danger;
     t.font = Font.systemFont(12);

@@ -1,9 +1,10 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "./db";
-import { calendars, tasks } from "./db/schema";
+import { calendars, events, tasklists, tasks } from "./db/schema";
 import { calendarFor, tasksFor } from "./google";
 import { syncEvents, syncTasks } from "./sync";
 import { eventRequestBody, taskRequestBody } from "./serialize";
+import { InputError, validateEventWrite, validateTaskWrite } from "./write-validation";
 
 /**
  * The ONE write-through path for tasks and events, shared by the REST routes
@@ -72,6 +73,8 @@ function applyTaskLocal(account: string, tasklist: string, id: string, b: TaskWr
 }
 
 export async function createTask(b: TaskWrite): Promise<{ id: string }> {
+  b = validateTaskWrite(b, "create");
+  assertTaskTarget(b, false);
   const created = await tasksFor(b.account).tasks.insert({
     tasklist: b.tasklist,
     parent: b.parent ?? undefined, // Google-native subtask (sub-issue)
@@ -92,7 +95,12 @@ export async function createTask(b: TaskWrite): Promise<{ id: string }> {
  */
 export async function createTasksBulk(list: TaskWrite[]): Promise<number> {
   if (!list.length) return 0;
+  list = list.map((item) => validateTaskWrite(item, "create"));
   const { account, tasklist } = list[0];
+  if (list.some((item) => item.account !== account || item.tasklist !== tasklist)) {
+    throw new InputError("bulk tasks must use one account and tasklist");
+  }
+  for (const item of list) assertTaskTarget(item, false);
   const api = tasksFor(account);
   const done: { id: string; b: TaskWrite }[] = [];
   for (const b of list) {
@@ -113,6 +121,8 @@ export async function createTasksBulk(list: TaskWrite[]): Promise<number> {
 }
 
 export async function updateTask(b: TaskWrite & { id: string }): Promise<void> {
+  b = validateTaskWrite(b, "update") as TaskWrite & { id: string };
+  assertTaskTarget(b, true);
   // Only call Google when a Google-owned field changed; local-only fields never go out.
   const hasGoogle = TASK_GOOGLE_FIELDS.some((k) => k in b);
   if (hasGoogle) {
@@ -147,6 +157,49 @@ function calColor(account: string, calendarId: string): string {
   return row?.color ?? "#4285f4";
 }
 
+function assertTaskTarget(b: TaskWrite, requireTask: boolean): void {
+  const list = db.select({ deletedAt: tasklists.deletedAt })
+    .from(tasklists)
+    .where(and(eq(tasklists.account, b.account), eq(tasklists.googleId, b.tasklist)))
+    .get();
+  if (!list || list.deletedAt != null) throw new InputError("tasklist does not exist");
+
+  if (requireTask) {
+    const row = db.select({ deletedAt: tasks.deletedAt, due: tasks.due })
+      .from(tasks)
+      .where(and(eq(tasks.account, b.account), eq(tasks.tasklist, b.tasklist), eq(tasks.googleId, b.id!)))
+      .get();
+    if (!row || row.deletedAt != null) throw new InputError("task does not exist");
+    const effectiveDue = b.due === undefined ? row.due : b.due;
+    if (b.dueTime && !effectiveDue) throw new InputError("dueTime requires due");
+  }
+  if (b.parent) {
+    const parent = db.select({ parent: tasks.parent, deletedAt: tasks.deletedAt })
+      .from(tasks)
+      .where(and(eq(tasks.account, b.account), eq(tasks.tasklist, b.tasklist), eq(tasks.googleId, b.parent)))
+      .get();
+    if (!parent || parent.deletedAt != null) throw new InputError("parent task does not exist");
+    if (parent.parent) throw new InputError("nested subtasks are not supported");
+  }
+}
+
+function assertCalendarTarget(account: string, calendarId: string, eventId?: string): void {
+  const calendar = db.select({ accessRole: calendars.accessRole, deletedAt: calendars.deletedAt })
+    .from(calendars)
+    .where(and(eq(calendars.account, account), eq(calendars.googleId, calendarId)))
+    .get();
+  if (!calendar || calendar.deletedAt != null || !["owner", "writer"].includes(calendar.accessRole ?? "")) {
+    throw new InputError("calendar is not writable");
+  }
+  if (eventId) {
+    const event = db.select({ deletedAt: events.deletedAt })
+      .from(events)
+      .where(and(eq(events.account, account), eq(events.calendarId, calendarId), eq(events.googleId, eventId)))
+      .get();
+    if (!event || event.deletedAt != null) throw new InputError("event does not exist");
+  }
+}
+
 // Generous window around an edited event so the re-sync captures it.
 function windowAround(start: string, end: string) {
   const min = new Date(Date.parse(start) - 86_400_000).toISOString();
@@ -155,6 +208,8 @@ function windowAround(start: string, end: string) {
 }
 
 export async function createEvent(b: EventWrite): Promise<{ id: string }> {
+  b = validateEventWrite(b, "create");
+  assertCalendarTarget(b.account, b.calendarId);
   const created = await calendarFor(b.account).events.insert({
     calendarId: b.calendarId,
     requestBody: eventRequestBody(b),
@@ -167,6 +222,8 @@ export async function createEvent(b: EventWrite): Promise<{ id: string }> {
 }
 
 export async function updateEvent(b: EventWrite & { id: string }): Promise<void> {
+  b = validateEventWrite(b, "update") as EventWrite & { id: string };
+  assertCalendarTarget(b.account, b.calendarId, b.id);
   await calendarFor(b.account).events.patch({
     calendarId: b.calendarId,
     eventId: b.id,

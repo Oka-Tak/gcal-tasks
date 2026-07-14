@@ -28,6 +28,7 @@ export async function sendPush(n: Push): Promise<{ ok: boolean; error?: string }
   try {
     const res = await fetch(env.ntfyUrl, {
       method: "POST",
+      signal: AbortSignal.timeout(15_000),
       headers: {
         "Content-Type": "application/json",
         ...(env.ntfyToken ? { Authorization: `Bearer ${env.ntfyToken}` } : {}),

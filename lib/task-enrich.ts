@@ -4,6 +4,7 @@ import { tasks } from "./db/schema";
 import { runAgentAuto } from "./agent";
 import { glossaryBlock } from "./glossary";
 import { createTasksBulk } from "./mutations";
+import { parentTaskIdentity, taskIdentity } from "./task-identity";
 import { searchKnowledge } from "./owui";
 
 /**
@@ -19,8 +20,6 @@ import { searchKnowledge } from "./owui";
 const MAX_PER_RUN = 10;
 const SPLIT_MIN_EST = 90; // これ以上の見積りは分割候補
 const MAX_SPLITS_PER_RUN = 4;
-
-type TaskRow = typeof tasks.$inferSelect;
 
 function calibrationLines(): string[] {
   const done = db
@@ -79,7 +78,10 @@ async function enrichTasksInner(opts: { limit?: number; force?: boolean }): Prom
     .where(and(isNull(tasks.deletedAt), eq(tasks.status, "needsAction")))
     .all();
   const childCount = new Map<string, number>();
-  for (const t of all) if (t.parent) childCount.set(t.parent, (childCount.get(t.parent) ?? 0) + 1);
+  for (const t of all) {
+    const parentKey = parentTaskIdentity(t);
+    if (parentKey) childCount.set(parentKey, (childCount.get(parentKey) ?? 0) + 1);
+  }
   const open = all
     .filter((t) => !t.parent) // サブタスクは親側の分割で扱う
     .filter(
@@ -89,7 +91,7 @@ async function enrichTasksInner(opts: { limit?: number; force?: boolean }): Prom
           t.estimatedMin == null ||
           t.priority == null ||
           // 見積り済みでも大物が未分割なら分割候補として見る
-          ((t.estimatedMin ?? 0) >= SPLIT_MIN_EST && !childCount.get(t.googleId) && t.splitNudgedAt == null)),
+          ((t.estimatedMin ?? 0) >= SPLIT_MIN_EST && !childCount.get(taskIdentity(t)) && t.splitNudgedAt == null)),
     )
     .sort((a, b) => (a.due ?? "9999").localeCompare(b.due ?? "9999"))
     .slice(0, limit);
@@ -102,7 +104,7 @@ async function enrichTasksInner(opts: { limit?: number; force?: boolean }): Prom
   for (const t of open) {
     const q = [t.title ?? "", (t.notes ?? "").slice(0, 200)].filter(Boolean).join(" ");
     const rag = q.trim().length >= 4 ? await searchKnowledge(q, 5) : [];
-    const canSplit = splitBudget > 0 && !childCount.get(t.googleId);
+    const canSplit = splitBudget > 0 && !childCount.get(taskIdentity(t));
     const prompt = [
       "あなたは大学生の予定アシスタント。次のタスクの所要時間(分)と優先度(1-5, 5=最優先)を推定して。",
       "判断材料: 参考資料の抜粋（授業ノート・課題指示など）と、本人の過去タスクの実績分数。",
