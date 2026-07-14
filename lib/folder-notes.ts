@@ -285,6 +285,20 @@ export async function noteSourceCounts(): Promise<Record<string, { sources: numb
   return out;
 }
 
+/** フォルダに紐付いたノートID（逆引き）。録音アップロード時の合流判定用。 */
+export function noteOfFolderSync(folderAbs: string): string | null {
+  const root = env.notesExportDir;
+  if (!root) return null;
+  const rel = path.relative(root, folderAbs);
+  if (rel.startsWith("..") || !rel) return null;
+  try {
+    const led = JSON.parse(fsSync.readFileSync(LEDGER(), "utf8")) as Ledger;
+    return led.folders[rel]?.noteId ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** ノートに紐付いたフォルダの絶対パス（未紐付けは null）。資料追加の置き先解決用。 */
 export function folderOfNoteSync(noteId: string): string | null {
   const root = env.notesExportDir;

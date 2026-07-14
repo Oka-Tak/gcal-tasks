@@ -486,13 +486,35 @@ export async function ingestAudioNote(opts: {
   notebook?: string | null; // Open WebUI collection override (packing)
 }): Promise<string> {
   if (opts.files.length === 0) throw new Error("音声ファイルがありません");
+  const title0 = opts.title || opts.files[0].filename;
+
+  // フォルダ⇔ノート1対1: 同じ回のフォルダに既にノートがあれば（資料から
+  // 自動生成済み等）、新規ノートを作らずそこへ音源として合流する。
+  // 「録音を投げたら重複ノートができる」事故（地震防災0714.aacの実害）防止。
+  try {
+    const nb0 = notebookFor(opts.notebook, opts.eventKey) ?? (await inferCourseNotebook(title0).catch(() => null));
+    const dir = await resolveNoteDir(nb0, eventStartMs(opts.eventKey) ?? dateFromTitle(title0, Date.now()));
+    if (dir) {
+      const { noteOfFolderSync } = await import("./folder-notes");
+      const existingId = noteOfFolderSync(dir);
+      const existing = existingId ? db.select().from(notes).where(eq(notes.id, existingId)).get() : null;
+      if (existing && !existing.deletedAt) {
+        console.log(`[notes] 既存ノート「${existing.title}」へ音源を合流 (${title0})`);
+        await addAudiosToNote(existing.id, opts.files);
+        return existing.id;
+      }
+    }
+  } catch (e) {
+    console.log(`[notes] 合流判定に失敗（新規作成に切替）: ${String(e).slice(0, 120)}`);
+  }
+
   const id = crypto.randomUUID();
   const now = Date.now();
   db.insert(notes)
     .values({
       id,
       eventKey: opts.eventKey ?? null,
-      title: opts.title || opts.files[0].filename,
+      title: title0,
       status: "transcribing",
       createdAt: now,
       updatedAt: now,
@@ -552,6 +574,36 @@ export function createManualNote(opts: { title: string; content?: string; eventK
     });
   }
   return id;
+}
+
+/**
+ * サーバ起動時: 再起動で中断されたパイプラインを自動再開する。
+ * （デプロイ再起動が進行中の文字起こしを殺してノートが止まる実害があった —
+ * これがあれば再起動はいつでも安全）。中断中の transcribing 音源は pending に
+ * 戻し、ノートを直列で流し直す（whisperxを並べてCPUを飽和させない）。
+ */
+export async function resumeInterruptedNotes(): Promise<void> {
+  const rows = db
+    .select()
+    .from(notes)
+    .where(and(isNull(notes.deletedAt), inArray(notes.status, ["transcribing", "summarizing"])))
+    .all();
+  for (const r of rows) {
+    const audios = ensureAudioRows(r);
+    for (const a of audios) {
+      if (a.status === "transcribing")
+        db.update(noteAudios).set({ status: "pending", error: null }).where(eq(noteAudios.id, a.id)).run();
+    }
+    console.log(`[notes] 再起動で中断されたパイプラインを再開: ${r.title}`);
+    const nb = r.notebook ?? notebookFor(null, r.eventKey);
+    if (audios.length > 0) {
+      await pipeline(r.id, r.title ?? "(無題)", null, nb);
+    } else if (r.status === "summarizing") {
+      await summarizeAndPublish(r.id, r.title ?? "(無題)", null, nb, r.transcript ?? "");
+    } else {
+      setStatus(r.id, "error", { error: "再起動により中断されました（音源なし）" });
+    }
+  }
 }
 
 /**
