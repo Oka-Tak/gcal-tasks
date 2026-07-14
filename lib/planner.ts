@@ -113,36 +113,71 @@ export function buildPlan(horizonDays = 3): PlanResult {
   }
   slots.sort((a, b) => a.s - b.s);
 
-  // タスク（ASAP or 期限あり、未完了）を締切順に空きへ流し込む
-  const open = db
+  // タスク（ASAP or 期限あり、未完了）を締切順に空きへ流し込む。
+  // サブタスク（sub-issue）を持つ親はサブタスク単位で置く — 期限・ASAP・
+  // 優先度は子に無ければ親から継承、並びは Google の position 順。
+  const allOpen = db
     .select()
     .from(tasks)
     .where(and(isNull(tasks.deletedAt), eq(tasks.status, "needsAction")))
-    .all()
-    .filter((t) => t.asap || t.due);
-  const deadlineOf = (t: (typeof open)[0]) =>
-    t.due ? new Date(`${t.due.slice(0, 10)}T${t.dueTime ?? "23:59"}:00`).getTime() : Number.POSITIVE_INFINITY;
-  const key = (t: (typeof open)[0]) =>
-    `${t.asap ? "0" : "1"}|${t.due ? `${t.due.slice(0, 10)}T${t.dueTime ?? "23:59"}` : "9999"}|${9 - (t.priority ?? 0)}`;
-  open.sort((a, b) => (key(a) < key(b) ? -1 : 1));
+    .all();
+  type Row = (typeof allOpen)[0];
+  const kids = new Map<string, Row[]>();
+  for (const t of allOpen) {
+    if (!t.parent) continue;
+    (kids.get(t.parent) ?? kids.set(t.parent, []).get(t.parent)!).push(t);
+  }
+  interface WorkItem { title: string; estMin: number; dueYmd: string | null; dueTime: string | null; asap: boolean; priority: number; taskKey: string; seq: number }
+  const items: WorkItem[] = [];
+  for (const t of allOpen) {
+    if (t.parent || (!t.asap && !t.due)) continue;
+    const children = (kids.get(t.googleId) ?? []).sort((a, b) => (a.position ?? "").localeCompare(b.position ?? ""));
+    if (children.length > 0) {
+      children.forEach((c, i) =>
+        items.push({
+          title: `${t.title ?? ""}: ${c.title ?? "(無題)"}`,
+          estMin: c.estimatedMin ?? Math.max(SLOT_MIN_MIN, Math.round((t.estimatedMin ?? DEFAULT_EST_MIN) / children.length)),
+          dueYmd: (c.due ?? t.due)?.slice(0, 10) ?? null,
+          dueTime: c.due ? c.dueTime : t.dueTime,
+          asap: !!(c.asap || t.asap),
+          priority: c.priority ?? t.priority ?? 0,
+          taskKey: `${c.account}|${c.tasklist}|${c.googleId}`,
+          seq: i,
+        }),
+      );
+    } else {
+      items.push({
+        title: t.title ?? "(無題)",
+        estMin: t.estimatedMin ?? DEFAULT_EST_MIN,
+        dueYmd: t.due?.slice(0, 10) ?? null,
+        dueTime: t.dueTime,
+        asap: !!t.asap,
+        priority: t.priority ?? 0,
+        taskKey: `${t.account}|${t.tasklist}|${t.googleId}`,
+        seq: 0,
+      });
+    }
+  }
+  const key = (w: WorkItem) =>
+    `${w.asap ? "0" : "1"}|${w.dueYmd ? `${w.dueYmd}T${w.dueTime ?? "23:59"}` : "9999"}|${9 - w.priority}|${String(w.seq).padStart(3, "0")}`;
+  items.sort((a, b) => (key(a) < key(b) ? -1 : 1));
 
   const blocks: PlanBlock[] = [];
   const warnings: string[] = [];
-  for (const t of open) {
-    let remain = Math.max(SLOT_MIN_MIN, t.estimatedMin ?? DEFAULT_EST_MIN) * 60_000;
-    const limit = deadlineOf(t);
-    const taskKey = `${t.account}|${t.tasklist}|${t.googleId}`;
+  for (const w of items) {
+    let remain = Math.max(SLOT_MIN_MIN, w.estMin) * 60_000;
+    const limit = w.dueYmd ? new Date(`${w.dueYmd}T${w.dueTime ?? "23:59"}:00`).getTime() : Number.POSITIVE_INFINITY;
     for (const slot of slots) {
       if (remain <= 0) break;
       if (slot.e - slot.s < SLOT_MIN_MIN * 60_000) continue;
       const end = Math.min(slot.e, slot.s + Math.min(remain, CHUNK_MAX_MIN * 60_000), limit);
       if (end - slot.s < SLOT_MIN_MIN * 60_000) continue;
-      blocks.push({ kind: "task", title: t.title ?? "(無題)", startMs: slot.s, endMs: end, taskKey });
+      blocks.push({ kind: "task", title: w.title, startMs: slot.s, endMs: end, taskKey: w.taskKey });
       remain -= end - slot.s;
       slot.s = end; // スロットを消費
     }
     if (remain > 0 && Number.isFinite(limit)) {
-      warnings.push(`「${t.title ?? "(無題)"}」が期限までに約${Math.ceil(remain / 60_000)}分ぶん収まりません`);
+      warnings.push(`「${w.title}」が期限までに約${Math.ceil(remain / 60_000)}分ぶん収まりません`);
     }
   }
   blocks.push(...deadlineMarks);

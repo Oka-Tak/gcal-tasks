@@ -2,9 +2,12 @@ import { and, eq, isNull } from "drizzle-orm";
 import { db } from "./db";
 import { tasks } from "./db/schema";
 import { env } from "./env";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { pushEnabled, sendPush } from "./notify";
 import { muteMatcher } from "./notify-mute";
 import { checkMorningBriefing } from "./briefing";
+import { enrichTasks } from "./task-enrich";
 
 /**
  * Hourly proactive nudges (ntfy), on top of the explicit remindAt reminders:
@@ -164,6 +167,26 @@ export async function checkDeadlines(): Promise<number> {
   return sent;
 }
 
+/**
+ * 毎日0時台の最初のtickでAI一括推定（見積り・優先度・サブタスク分割）を回す。
+ * 実行日はファイルで永続化（再起動をまたいでも1日1回）。朝ブリーフィング前の
+ * 実行と合わせて1日2回、どちらも空欄だけ埋めるので冪等。
+ */
+const ENRICH_STAMP = () => path.join(path.resolve(env.dataDir), ".enrich-last");
+const dstamp = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+async function checkNightlyEnrich(): Promise<void> {
+  const now = new Date();
+  if (now.getHours() !== 0) return;
+  const today = dstamp(now);
+  try {
+    if ((await fs.readFile(ENRICH_STAMP(), "utf8")).trim() === today) return;
+  } catch { /* first run */ }
+  await fs.mkdir(path.dirname(ENRICH_STAMP()), { recursive: true }).catch(() => {});
+  await fs.writeFile(ENRICH_STAMP(), today); // 先に刻む — クラッシュで連打しない
+  const r = await enrichTasks({ limit: 15 });
+  if (r.updated) console.log(`[kairos] nightly enrich: ${r.lines.join(" / ")}`);
+}
+
 const DEADLINE_TICK_MS = 60_000;
 const TICK_MS = 60 * 60_000; // hourly
 const BOOT_DELAY_MS = 30_000; // let the first syncs land before nudging
@@ -192,6 +215,8 @@ export function startNudgeLoop(): void {
       .catch((e) => console.error("[kairos] deadline tick failed:", e));
     // 朝ブリーフィング (1日1回、07時台の最初のtickで送信)
     checkMorningBriefing().catch((e) => console.error("[kairos] briefing failed:", e));
+    // 0時のAI一括推定（見積り・優先度・サブタスク分割）
+    checkNightlyEnrich().catch((e) => console.error("[kairos] nightly enrich failed:", e));
   };
   const dTimer = setInterval(deadlineTick, DEADLINE_TICK_MS);
   dTimer.unref?.();
