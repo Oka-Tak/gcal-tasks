@@ -245,7 +245,11 @@ export async function pushNoteToOwui(note: {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ file_id: file.id }),
     }, token);
-    if (!add.ok) throw new Error(`owui knowledge add: HTTP ${add.status} ${(await add.text()).slice(0, 200)}`);
+    if (!add.ok) {
+      // 孤児を残すと同内容の再pushが永遠に "Duplicate content" で弾かれる
+      await owuiFetch(`/api/v1/files/${file.id}`, { method: "DELETE" }, token).catch(() => {});
+      throw new Error(`owui knowledge add: HTTP ${add.status} ${(await add.text()).slice(0, 200)}`);
+    }
     console.log(`[owui] note ${note.id} indexed into "${name}"`);
     return file.id;
   } catch (e) {

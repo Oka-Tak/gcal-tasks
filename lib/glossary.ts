@@ -57,15 +57,32 @@ export function glossaryBlock(maxChars = 2000): string {
   return out;
 }
 
-/** RAG用にOWUIへ1ファイルで登録（kairos-note-glossary.md を毎回置換）。 */
+/**
+ * RAG用にOWUIへ1ファイルで登録（kairos-note-glossary.md を毎回置換）。
+ * 連続保存（1語ずつblurで飛んでくる）が並行pushにならないよう直列化する —
+ * 並行するとOWUIに同内容の孤児ファイルが積もりDuplicate contentで詰まる（実害あり）。
+ */
+const busy = { running: false, again: false };
 export async function pushGlossaryToOwui(): Promise<void> {
-  const rows = listGlossary().filter((g) => g.definition && !g.definition.includes(PLACEHOLDER));
-  if (rows.length === 0) return;
-  const md = rows.map((g) => `## ${g.term}${g.aliases ? `（${g.aliases}）` : ""}\n${g.definition}`).join("\n\n");
-  await pushNoteToOwui(
-    { id: "glossary", title: "用語集（ユーザー固有の専門用語・団体）", content: md, transcript: null },
-    null, // 既定コレクション — RAGは全コレクション横断なのでどこでも拾われる
-  );
+  if (busy.running) {
+    busy.again = true; // 走行中に来た更新は終了後にもう1周で拾う
+    return;
+  }
+  busy.running = true;
+  try {
+    do {
+      busy.again = false;
+      const rows = listGlossary().filter((g) => g.definition && !g.definition.includes(PLACEHOLDER));
+      if (rows.length === 0) return;
+      const md = rows.map((g) => `## ${g.term}${g.aliases ? `（${g.aliases}）` : ""}\n${g.definition}`).join("\n\n");
+      await pushNoteToOwui(
+        { id: "glossary", title: "用語集（ユーザー固有の専門用語・団体）", content: md, transcript: null },
+        null, // 既定コレクション — RAGは全コレクション横断なのでどこでも拾われる
+      );
+    } while (busy.again);
+  } finally {
+    busy.running = false;
+  }
 }
 
 /** 初回だけの種まき。不明な用語はプレースホルダで置き、UIから編集してもらう。 */
