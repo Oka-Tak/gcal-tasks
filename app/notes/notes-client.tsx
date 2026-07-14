@@ -266,6 +266,22 @@ function NoteModal({ id, onClose, onChanged }: {
     }
   };
 
+  // 要約だけ作り直す（文字起こしはそのまま、フォルダの資料を取り直す）
+  const [resumBusy, setResumBusy] = useState(false);
+  const resummarize = async () => {
+    setResumBusy(true);
+    setErr(null);
+    try {
+      await api("POST", "/api/notes/resummarize", { id });
+      await load(); // summarizing に変わる → ポーリングが引き継ぐ
+      onChanged();
+    } catch (e) {
+      setErr(String((e as Error).message ?? e).slice(0, 200));
+    } finally {
+      setResumBusy(false);
+    }
+  };
+
   // 資料の追加（ノートのフォルダに保存 → RAG登録 → 資料込みで再要約）
   const matRef = useRef<HTMLInputElement>(null);
   const [matBusy, setMatBusy] = useState(false);
@@ -394,6 +410,9 @@ function NoteModal({ id, onClose, onChanged }: {
                 <button className="btn" disabled={matBusy}
                   title="このノートに資料(pdf/pptx等)を追加 — フォルダに保存し、資料の内容も踏まえて要約し直します"
                   onClick={() => matRef.current?.click()}>{matBusy ? "追加中…" : "＋資料追加"}</button>
+                <button className="btn" disabled={resumBusy}
+                  title="要約だけ作り直す（文字起こしはそのまま）。OneDrive側でフォルダに置いた資料もすぐ反映されます"
+                  onClick={() => void resummarize()}>{resumBusy ? "…" : "🔄 要約を更新"}</button>
               </>
             )}
             <div className="spacer" />
