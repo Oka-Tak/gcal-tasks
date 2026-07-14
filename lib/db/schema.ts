@@ -228,6 +228,20 @@ export const noteAudios = sqliteTable(
  * ファイル（pdf/pptx/docx等）を追加して RAG から引けるようにする。
  * 実体は data/materials/ に保存し、OWUI へは pushLocalFileToOwui で登録。
  */
+/**
+ * 用語集: ユーザー固有の専門用語・団体・略語（TRS・セキュ活・学情など）。
+ * AIが文脈を誤解しないよう、チャット/タスク推定/mnemoブリッジのプロンプトに
+ * 注入され、OWUIのRAGにも1ファイルとして登録される。UIはプランカードの📖。
+ */
+export const glossary = sqliteTable("glossary", {
+  id: text("id").primaryKey(), // uuid
+  term: text("term").notNull(), // 例: TRS
+  aliases: text("aliases"), // 別名・読み（カンマ区切り）
+  definition: text("definition"), // 「（編集してください）」の間はプロンプトに入れない
+  createdAt: integer("created_at"),
+  updatedAt: integer("updated_at"),
+});
+
 export const materials = sqliteTable(
   "materials",
   {

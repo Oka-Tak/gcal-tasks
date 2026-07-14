@@ -130,6 +130,9 @@ export default function Calendar() {
   const [pane, setPane] = useState<"cal" | "tasks">("cal"); // mobile: which pane is visible
   const [actuals, setActuals] = useState<ActualLog[]>([]); // 裏カレンダー: logs in range
   const [showActual, setShowActual] = useState(false);
+  // 🧭プラン: 空き時間へのタスク自動配置をグリッドに薄く重ねる（既定ON）
+  const [planBlocks, setPlanBlocks] = useState<PlanBlock[]>([]);
+  const [showPlan, setShowPlan] = useState(true);
 
   const acctColor = useCallback(
     (email: string) => accounts.find((a) => a.email === email)?.color || "#888",
@@ -154,6 +157,7 @@ export default function Calendar() {
     if (window.matchMedia("(max-width: 720px)").matches) setView("day");
     if (new URLSearchParams(window.location.search).get("pane") === "tasks") setPane("tasks");
     if (localStorage.getItem("kairos-show-actual") === "1") setShowActual(true);
+    if (localStorage.getItem("kairos-show-plan") === "0") setShowPlan(false);
     // stale-while-revalidate: 前回のデータを即座に表示し、裏で reload() が置き換える。
     // authed も楽観的に true にして全面スピナーを飛ばす（未ログインなら /api/status が折り返す）。
     try {
@@ -174,6 +178,16 @@ export default function Calendar() {
     localStorage.setItem("kairos-show-actual", on ? "1" : "0");
     if (on && view === "month") setView("week"); // 実績 is a time-grid view
   };
+
+  const reloadPlan = useCallback(() => {
+    api("GET", "/api/plan?days=7").then((p) => setPlanBlocks(p.blocks || [])).catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (!authed) return;
+    reloadPlan();
+    const t = setInterval(reloadPlan, 5 * 60_000);
+    return () => clearInterval(t);
+  }, [authed, tasks, reloadPlan]);
 
   const reloadTasks = useCallback(async () => {
     const tk = await api("GET", "/api/tasks");
@@ -378,6 +392,20 @@ export default function Calendar() {
     return out;
   }
 
+  // 🧭プラン overlay: /api/plan のタスク配置をこの日の分オフセットに変換
+  function dayPlan(day: Date) {
+    const dayStart = startOfDay(day).getTime();
+    const out: { key: string; label: string; s: number; e: number }[] = [];
+    for (const b of planBlocks) {
+      if (b.kind !== "task") continue;
+      const s = Math.max(0, Math.round((b.startMs - dayStart) / 60000));
+      const e = Math.min(1440, Math.round((b.endMs - dayStart) / 60000));
+      if (e <= 0 || s >= 1440 || e - s < 10) continue;
+      out.push({ key: `p:${b.startMs}:${b.taskKey ?? ""}`, label: b.title, s, e });
+    }
+    return out;
+  }
+
   // 裏カレンダー: logs clamped to this day's 0–1440 minute window
   // (sleep crosses midnight, so one log can paint blocks on two days).
   function dayActuals(day: Date) {
@@ -447,6 +475,11 @@ export default function Calendar() {
           <button className={!showActual ? "on" : ""} onClick={() => pickActual(false)}>予定</button>
           <button className={showActual ? "on" : ""} onClick={() => pickActual(true)}>実績</button>
         </div>
+        <button className={`btn planbtn${showPlan ? " on" : ""}`}
+          title="🧭プラン: 空き時間へのタスク自動配置を薄く重ねる"
+          onClick={() => setShowPlan((v) => { localStorage.setItem("kairos-show-plan", v ? "0" : "1"); return !v; })}>
+          🧭
+        </button>
         <div className="spacer" />
         <button className="btn btn-primary desktop-only" onClick={() => openEvent()}><PlusIcon size={15} />予定</button>
         <button className="btn" onClick={reload} title="再読み込み"><RefreshIcon size={16} /></button>
@@ -464,6 +497,7 @@ export default function Calendar() {
                 events={showActual ? [] : events}
                 tasksDue={showActual ? () => [] : tasksDue}
                 dayTimed={showActual ? dayActuals : dayTimed}
+                planFor={!showActual && showPlan ? dayPlan : undefined}
                 onEvent={openDetail} onTask={openTask}
                 onSlot={showActual ? () => {} : (d) => openEvent(undefined, d)} />}
         </div>
@@ -551,9 +585,10 @@ function TimeView(props: {
   view: View; anchor: Date; events: Ev[];
   tasksDue: (d: Date) => Task[];
   dayTimed: (d: Date) => { key: string; color: string; label: string; s: number; e: number; isTask: boolean; done: boolean; onClick: () => void }[];
+  planFor?: (d: Date) => { key: string; label: string; s: number; e: number }[];
   onEvent: (e: Ev) => void; onTask: (t: Task) => void; onSlot: (d: Date) => void;
 }) {
-  const { view, anchor, events, tasksDue, dayTimed, onEvent, onTask, onSlot } = props;
+  const { view, anchor, events, tasksDue, dayTimed, planFor, onEvent, onTask, onSlot } = props;
   const ds = viewDays(view, anchor);
   const cols = `var(--gutter) repeat(${ds.length},1fr)`;
   const now = new Date();
@@ -604,6 +639,13 @@ function TimeView(props: {
               <div key={+d} className="col">
                 {Array.from({ length: HOURS }, (_, h) => (
                   <div key={h} className="hr" onClick={() => { const s = new Date(d); s.setHours(h, 0, 0, 0); onSlot(s); }} />
+                ))}
+                {/* 🧭プラン: 空き時間へのタスク自動配置（薄い点線、クリック透過） */}
+                {planFor?.(d).map((p) => (
+                  <div key={p.key} className="planov"
+                    style={{ top: `${p.s / 60 * HOUR_H}px`, height: `${(p.e - p.s) / 60 * HOUR_H - 2}px` }}>
+                    <span>🧭 {p.label}</span>
+                  </div>
                 ))}
                 {packed.map(({ item, col, ncols }) => (
                   <div
@@ -742,6 +784,7 @@ const hmOf = (ms: number) => { const d = new Date(ms); return `${pad(d.getHours(
 function PlanCard({ refreshKey }: { refreshKey: unknown }) {
   const [plan, setPlan] = useState<PlanResp | null>(null);
   const [openRoutines, setOpenRoutines] = useState(false);
+  const [openGlossary, setOpenGlossary] = useState(false);
   const [enriching, setEnriching] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const reload = useCallback(() => {
@@ -778,6 +821,14 @@ function PlanCard({ refreshKey }: { refreshKey: unknown }) {
           title="締切ありタスクをRAG(授業ノート等)でクロールして見積り・優先度をAI推定">
           {enriching ? "推定中…" : "🤖 AI推定"}
         </button>
+        <button className="btn" title="予定・タスク・プラン・用語集をまとめてコピー（Claude Web等に貼り付ける用）"
+          onClick={() => {
+            void api("GET", "/api/export/claude").then(async (r) => {
+              await navigator.clipboard.writeText(r.markdown);
+              setMsg(`📋 コンテキストをコピーしました（${Math.round(r.chars / 1000)}k字）— Claude等に貼り付けてください`);
+            }).catch((e) => setMsg(String(e).slice(0, 120)));
+          }}>📋</button>
+        <button className="btn" onClick={() => setOpenGlossary(true)} title="用語集 — 自分固有の専門用語・団体をAIに教える">📖</button>
         <button className="btn" onClick={() => setOpenRoutines(true)} title="寮食・風呂・洗濯・睡眠などの生活ルール">⚙</button>
       </div>
       {plan.now && (
@@ -799,7 +850,69 @@ function PlanCard({ refreshKey }: { refreshKey: unknown }) {
       {plan.warnings.slice(0, 2).map((w, i) => <p key={i} className="errline" style={{ margin: "4px 0 0" }}>⚠ {w}</p>)}
       {msg && <p className="hint" style={{ margin: "4px 0 0" }}>{msg}</p>}
       {openRoutines && <RoutinesModal onClose={() => { setOpenRoutines(false); reload(); }} />}
+      {openGlossary && <GlossaryModal onClose={() => setOpenGlossary(false)} />}
     </div>
+  );
+}
+
+type GlossaryItem = { id: string; term: string; aliases: string | null; definition: string | null };
+
+/** 用語集: 自分固有の専門用語・団体をAI（チャット/推定/OWUI RAG/mnemo）に教える。 */
+function GlossaryModal({ onClose }: { onClose: () => void }) {
+  const [items, setItems] = useState<GlossaryItem[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const [draft, setDraft] = useState({ term: "", aliases: "", definition: "" });
+  const reload = useCallback(async () => {
+    const r = await api("GET", "/api/glossary");
+    setItems(r.glossary || []);
+  }, []);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void reload().catch((e) => setErr(String(e)));
+  }, [reload]);
+  const save = async (w: Partial<GlossaryItem> & { term: string }) => {
+    try {
+      await api("POST", "/api/glossary", w);
+      await reload();
+      setErr(null);
+    } catch (e) {
+      setErr(String((e as Error).message ?? e).slice(0, 120));
+    }
+  };
+  return (
+    <Scrim onClose={onClose}>
+      <h3>📖 用語集</h3>
+      <p className="hint" style={{ marginTop: 0 }}>
+        自分にしか通じない用語・団体・略語をAIに教えます（チャット・タスク推定・OWUIのRAG・mnemoに反映）。
+        「（編集してください）」のままの行はAIに渡されません。
+      </p>
+      <div style={{ maxHeight: 340, overflowY: "auto" }}>
+        {items.map((g) => (
+          <div key={g.id} className="routine-row">
+            <input style={{ width: 110 }} defaultValue={g.term}
+              onBlur={(e) => { if (e.target.value !== g.term) void save({ ...g, term: e.target.value }); }} />
+            <input style={{ width: 110 }} placeholder="別名" defaultValue={g.aliases ?? ""}
+              onBlur={(e) => { if (e.target.value !== (g.aliases ?? "")) void save({ ...g, aliases: e.target.value }); }} />
+            <input style={{ flex: 1, minWidth: 160 }} placeholder="説明" defaultValue={g.definition ?? ""}
+              onBlur={(e) => { if (e.target.value !== (g.definition ?? "")) void save({ ...g, definition: e.target.value }); }} />
+            <button className="link-danger"
+              onClick={() => void api("DELETE", `/api/glossary?id=${encodeURIComponent(g.id)}`).then(reload)}>✕</button>
+          </div>
+        ))}
+      </div>
+      <div className="routine-row" style={{ marginTop: 8 }}>
+        <input style={{ width: 110 }} placeholder="用語" value={draft.term} onChange={(e) => setDraft({ ...draft, term: e.target.value })} />
+        <input style={{ width: 110 }} placeholder="別名" value={draft.aliases} onChange={(e) => setDraft({ ...draft, aliases: e.target.value })} />
+        <input style={{ flex: 1, minWidth: 160 }} placeholder="説明" value={draft.definition} onChange={(e) => setDraft({ ...draft, definition: e.target.value })} />
+        <button className="btn btn-primary" disabled={!draft.term.trim()}
+          onClick={() => { void save(draft); setDraft({ term: "", aliases: "", definition: "" }); }}>追加</button>
+      </div>
+      {err && <p className="errline">{err}</p>}
+      <div className="modal-foot" style={{ marginTop: 12 }}>
+        <div className="spacer" />
+        <button className="btn btn-primary" onClick={onClose}>閉じる</button>
+      </div>
+    </Scrim>
   );
 }
 

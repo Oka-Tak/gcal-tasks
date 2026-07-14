@@ -603,3 +603,10 @@ textarea.mono,input.mono{font-family:var(--mono);font-size:12px}
 .rdays{display:inline-flex;gap:2px}
 .daybtn{font-size:10.5px;padding:1px 4px;border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:4px;cursor:pointer}
 .daybtn.on{color:var(--accent);border-color:var(--accent-dim)}
+
+/* ---- 🧭プランのカレンダーオーバーレイ（邪魔しない: クリック透過・薄表示） ---- */
+.planov{position:absolute;left:2px;right:2px;border:1.5px dashed rgba(45,224,167,.45);
+  border-radius:6px;background:rgba(45,224,167,.07);pointer-events:none;overflow:hidden;z-index:1}
+.planov span{display:block;font-size:9.5px;line-height:1.25;color:var(--muted);padding:1px 4px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.planbtn.on{border-color:var(--accent-dim);color:var(--accent)}

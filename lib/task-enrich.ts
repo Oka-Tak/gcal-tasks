@@ -2,6 +2,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { db } from "./db";
 import { tasks } from "./db/schema";
 import { runAgentAuto } from "./agent";
+import { glossaryBlock } from "./glossary";
 import { createTasksBulk } from "./mutations";
 import { searchKnowledge } from "./owui";
 
@@ -96,6 +97,7 @@ async function enrichTasksInner(opts: { limit?: number; force?: boolean }): Prom
   if (open.length === 0) return out;
 
   const calib = calibrationLines();
+  const terms = glossaryBlock(1200);
   let splitBudget = MAX_SPLITS_PER_RUN;
   for (const t of open) {
     const q = [t.title ?? "", (t.notes ?? "").slice(0, 200)].filter(Boolean).join(" ");
@@ -115,6 +117,7 @@ async function enrichTasksInner(opts: { limit?: number; force?: boolean }): Prom
       t.due ? `# 期限: ${t.due.slice(0, 10)}${t.dueTime ? ` ${t.dueTime}` : ""}` : "# 期限: ASAP",
       t.estimatedMin != null ? `# 既存の見積り: ${t.estimatedMin}分（変更不要ならこの値を返す）` : "",
       "",
+      ...(terms ? ["# 用語集（ユーザー固有の用語・団体）", terms, ""] : []),
       ...(rag.length ? ["# 参考資料（RAG抜粋）", ...rag.map((r) => `--- ${r.src} ---\n${r.text}`)] : []),
       ...(calib.length ? ["", "# 本人の過去実績（較正用）", ...calib] : []),
     ].filter(Boolean).join("\n");

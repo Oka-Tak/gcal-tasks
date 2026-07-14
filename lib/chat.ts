@@ -8,6 +8,7 @@ import { liveAgentCatalog } from "./agents-live";
 import { listAccounts } from "./accounts";
 import { listLogs } from "./logs";
 import { ACTION_SPEC, createProposals, listProposals, type ProposalView } from "./actions";
+import { glossaryBlock } from "./glossary";
 import { ragContext } from "./rag";
 
 /**
@@ -440,6 +441,11 @@ function buildPrompt(taskRow: TaskRow | null, history: ChatMessage[], message: s
     describeTargets(),
     "",
   );
+  {
+    // ユーザー固有の専門用語・団体（誤解防止。📖用語集で編集）
+    const gb = glossaryBlock(2000);
+    if (gb) out.push("# 用語集（ユーザー固有の用語・団体 — この意味で解釈する）", gb, "");
+  }
   if (taskRow) {
     out.push("# 対象タスク（この相談の主題）");
     out.push(

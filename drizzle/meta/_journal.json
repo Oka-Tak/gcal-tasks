@@ -92,6 +92,13 @@
       "when": 1783993013260,
       "tag": "0012_opposite_rockslide",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1783998540632,
+      "tag": "0013_dry_white_tiger",
+      "breakpoints": true
     }
   ]
 }
