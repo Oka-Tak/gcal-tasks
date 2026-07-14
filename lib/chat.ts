@@ -9,6 +9,8 @@ import { listAccounts } from "./accounts";
 import { listLogs } from "./logs";
 import { ACTION_SPEC, createProposals, listProposals, type ProposalView } from "./actions";
 import { glossaryBlock } from "./glossary";
+import { buildPlan } from "./planner";
+import { listRoutines } from "./routines";
 import { ragContext } from "./rag";
 
 /**
@@ -340,6 +342,45 @@ function freeSlots(): string {
   return lines.join("\n");
 }
 
+/** 生活ルール（寮の夕食・睡眠等）— プランナーの制約をチャットにも見せる。 */
+function routinesText(): string {
+  const rts = listRoutines().filter((r) => r.active);
+  if (rts.length === 0) return "（未設定）";
+  return rts
+    .map((r) =>
+      `- ${r.label}: ${r.kind === "deadline" ? `${r.endHm}までに` : r.kind === "sleep" ? `就寝${r.startHm}〜起床${r.endHm}` : `${r.startHm}-${r.endHm}`}${r.days ? `（${r.days}）` : "（毎日）"}${r.note ? ` — ${r.note}` : ""}`,
+    )
+    .join("\n");
+}
+
+/** 🧭今やること — プランナーの現在の割り当て（今日+明日）をチャットに見せる。 */
+function planText(): string {
+  try {
+    const p = buildPlan(2);
+    const hmOf = (ms: number) => {
+      const d = new Date(ms);
+      return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    };
+    const mdOf = (ms: number) => {
+      const d = new Date(ms);
+      return `${d.getMonth() + 1}/${d.getDate()}(${"日月火水木金土"[d.getDay()]})`;
+    };
+    const lines: string[] = [];
+    if (p.now) lines.push(`今: ${p.now.title}${p.now.untilMs ? `（〜${hmOf(p.now.untilMs)}）` : ""}`);
+    for (const b of p.blocks.slice(0, 14)) {
+      lines.push(
+        b.kind === "deadline"
+          ? `- ${mdOf(b.startMs)} ${hmOf(b.startMs)} ⏰ ${b.title}`
+          : `- ${mdOf(b.startMs)} ${hmOf(b.startMs)}-${hmOf(b.endMs)} ${b.title}`,
+      );
+    }
+    lines.push(...p.warnings.slice(0, 4).map((w) => `- ⚠ ${w}`));
+    return lines.join("\n") || "（割り当てなし）";
+  } catch (e) {
+    return `（プラン計算に失敗: ${String(e).slice(0, 80)}）`;
+  }
+}
+
 /**
  * The calibration data: how the user's past estimates compared to reality.
  * This is what makes estimates personal instead of generic.
@@ -466,6 +507,12 @@ function buildPrompt(taskRow: TaskRow | null, history: ChatMessage[], message: s
   out.push("# 未完了タスク", openTasks(), "");
   out.push("# 今後の予定（ローカルミラー。直近7日は詳細、8〜30日先は簡易。31日以降はここに無いだけで存在しうる —", "  「予定が無い」ではなく「この画面では分からない」と答えること）", upcomingEvents(), "");
   out.push("# 空き時間（今後14日、07:00〜23:00、予定を除いた枠。作業枠の提案はここから）", freeSlots(), "");
+  out.push("# 生活ルール（タスク以外の毎日の制約。作業枠の提案はこの時間も避ける）", routinesText(), "");
+  out.push(
+    "# 現在のプラン（🧭今やること — 空き時間へのタスク自動割り当て。「今なにをすべき?」はこれを土台に、変更したい場合はプランとの差分で答える）",
+    planText(),
+    "",
+  );
   out.push("# 見積りと実績（このユーザーの較正データ）", estimationHistory(), "");
   out.push("# ユーザーのライフログ要約", summarizeLogs(), "");
   out.push("# 最近のノート（講義の文字起こし等。ユーザーが内容に触れたら参照）", recentNotes(), "");
