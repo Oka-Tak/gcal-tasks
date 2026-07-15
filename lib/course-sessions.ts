@@ -88,6 +88,19 @@ export function dateFromFolderName(name: string): number | null {
   return null;
 }
 
+/**
+ * ファイル名から回番号（第M回/第M講）を拾う。教授のファイル命名が一次情報 —
+ * 休講がカレンダーに残っていると「N番目の開催=第N回」の数えがズレる
+ * （データ処理プログラミングで実害: 5/20・6/10が休みなのに予定が残り全部1〜2回ズレた）。
+ */
+export function sessionNoFromFiles(files: string[]): number | null {
+  for (const f of files) {
+    const m = f.match(/第\s*0*(\d{1,2})\s*[回講]/);
+    if (m) return +m[1];
+  }
+  return null;
+}
+
 /** 指定授業・開催日のカレンダー回（第N回とeventKey）。フォルダ→予定の逆引き用。 */
 export function occurrenceForDate(course: string, dateMs: number): Occurrence | null {
   const ymd = ymdOf(dateMs);
@@ -102,6 +115,8 @@ export interface SessionView {
   future: boolean;
   folder: string | null; // 授業フォルダ直下の回別フォルダ名
   files: string[];
+  fileNo: number | null; // 資料ファイル名の「第M回」表記（一次情報）
+  noMismatch: boolean; // 資料の回番号とカレンダー数えが食い違っている（要確認）
   noteId: string | null;
   noteStatus: string | null;
   noteTitle: string | null;
@@ -188,6 +203,8 @@ export async function courseView(course: string): Promise<CourseView> {
     if (folder) usedDirs.add(folder);
     const noteId = folder ? noteOf(folder) : null;
     const note = noteId ? noteRows.get(noteId) : null;
+    const files = folder ? await listFiles(folder) : [];
+    const fileNo = sessionNoFromFiles(files);
     out.sessions.push({
       n: o.n,
       ymd: o.ymd,
@@ -195,7 +212,9 @@ export async function courseView(course: string): Promise<CourseView> {
       eventKey: o.eventKey,
       future: o.ymd > today,
       folder,
-      files: folder ? await listFiles(folder) : [],
+      files,
+      fileNo,
+      noMismatch: fileNo != null && fileNo !== o.n,
       noteId: note ? noteId : null,
       noteStatus: note?.status ?? null,
       noteTitle: note?.title ?? null,
@@ -209,6 +228,7 @@ export async function courseView(course: string): Promise<CourseView> {
     if (dateMs) {
       const noteId = noteOf(d);
       const note = noteId ? noteRows.get(noteId) : null;
+      const files = await listFiles(d);
       out.sessions.push({
         n: null,
         ymd: ymdOf(dateMs),
@@ -216,7 +236,9 @@ export async function courseView(course: string): Promise<CourseView> {
         eventKey: null,
         future: false,
         folder: d,
-        files: await listFiles(d),
+        files,
+        fileNo: sessionNoFromFiles(files),
+        noMismatch: false,
         noteId: note ? noteId : null,
         noteStatus: note?.status ?? null,
         noteTitle: note?.title ?? null,

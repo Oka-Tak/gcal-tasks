@@ -461,6 +461,7 @@ type FolderInfo = { folder: string; notebook: string; files: number; notes: numb
 type SessionRow = {
   n: number | null; ymd: string; dateMs: number; future: boolean;
   folder: string | null; files: string[];
+  fileNo: number | null; noMismatch: boolean;
   noteId: string | null; noteStatus: string | null; noteTitle: string | null;
 };
 type CourseViewResp = {
@@ -591,8 +592,12 @@ function CourseFoldersCard({ selected, onSelect, onOpenNote, onNotesChanged }: {
                   <div key={s.ymd}
                     style={{ display: "flex", gap: 8, alignItems: "center", padding: "2px 0", opacity: s.future ? 0.5 : 1 }}>
                     <span style={{ width: 52, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-                      {s.n != null ? `第${s.n}回` : "—"}
+                      {(s.fileNo ?? s.n) != null ? `第${s.fileNo ?? s.n}回` : "—"}
                     </span>
+                    {s.noMismatch && (
+                      <span title={`⚠ 資料は「第${s.fileNo}回」表記なのにカレンダー数えでは${s.n}番目 — 休講の予定がカレンダーに残っていてズレている可能性。フォルダの日付を確認してください`}
+                        style={{ flex: "none", cursor: "help" }}>⚠</span>
+                    )}
                     <span style={{ width: 64 }}>{fmtYmdShort(s.ymd)}</span>
                     <span className="hint" style={{ margin: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
                       title={s.files.join("\n") || (s.folder ? "（ファイルなし）" : "（フォルダ未作成）")}>

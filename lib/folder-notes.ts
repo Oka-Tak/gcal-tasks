@@ -10,7 +10,7 @@ import { notes } from "./db/schema";
 import { env } from "./env";
 import { AUDIO_EXT, addAudiosToNote, inFlightCount, summarizeAndPublish, type AudioSource } from "./notes";
 import { exportedPathsSync } from "./notes-export";
-import { dateFromFolderName, occurrenceForDate } from "./course-sessions";
+import { dateFromFolderName, occurrenceForDate, sessionNoFromFiles } from "./course-sessions";
 
 /**
  * フォルダ駆動ノート: 授業資料/<授業>/<フォルダ>/ を定期スキャンして、
@@ -173,8 +173,16 @@ async function createNote(ledger: Ledger, rel: string, abs: string, course: stri
   const dirName = path.basename(abs);
   const dateMs = dateFromFolderName(dirName);
   const occ = dateMs ? occurrenceForDate(course, dateMs) : null;
-  const title = occ
-    ? `${course} 第${occ.n}回 (${new Date(occ.dateMs).getMonth() + 1}/${new Date(occ.dateMs).getDate()})`
+  // 回番号は資料ファイルの「第M回」表記を優先 — 休講がカレンダーに残っていると
+  // 開催回カウントがズレる（データ処理プログラミングで実害）。日付はフォルダ名が正。
+  const fileNo = sessionNoFromFiles([...cur.materials, ...cur.audio]);
+  const no = fileNo ?? occ?.n ?? null;
+  if (fileNo != null && occ && fileNo !== occ.n) {
+    console.log(`[folder-notes] ⚠ 回番号ズレ検出: ${rel} 資料=第${fileNo}回 / カレンダー数え=${occ.n}番目 — 資料側を採用`);
+  }
+  const d0 = dateMs ? new Date(dateMs) : null;
+  const title = no != null && d0
+    ? `${course} 第${no}回 (${d0.getMonth() + 1}/${d0.getDate()})`
     : dirName;
   const notebook = `講義: ${course}`;
   const now = Date.now();
