@@ -613,3 +613,5 @@ textarea.mono,input.mono{font-family:var(--mono);font-size:12px}
 .planrow .pinbtn{flex:none;border:none;background:none;cursor:pointer;font-size:11px;
   opacity:.35;padding:0 2px;line-height:1}
 .planrow:hover .pinbtn{opacity:1}
+.modal-foot{flex-wrap:wrap}
+.modal-foot .btn{white-space:nowrap}

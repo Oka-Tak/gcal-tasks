@@ -84,7 +84,7 @@ async function api(method: string, url: string, body?: unknown) {
 /* ------------------------------------------------------------ audio upload */
 export function AudioUpload({ eventKey, eventLabel, onStarted, compact }: {
   eventKey?: string | null; eventLabel?: string | null;
-  onStarted: () => void; compact?: boolean;
+  onStarted: (noteId?: string, merged?: boolean, title?: string) => void; compact?: boolean;
 }) {
   const [files, setFiles] = useState<{ file: File; lang: string }[]>([]);
   const [title, setTitle] = useState("");
@@ -109,10 +109,11 @@ export function AudioUpload({ eventKey, eventLabel, onStarted, compact }: {
       if (eventLabel) fd.append("eventLabel", eventLabel);
       const r = await fetch("/api/notes/ingest", { method: "POST", body: fd });
       if (!r.ok) throw new Error(await r.text());
+      const d = (await r.json()) as { id: string; merged?: boolean; title?: string };
       setFiles([]);
       setTitle("");
       if (fileRef.current) fileRef.current.value = "";
-      onStarted();
+      onStarted(d.id, d.merged, d.title);
     } catch (e) {
       setErr(String(e));
     } finally {
@@ -232,9 +233,11 @@ function NoteModal({ id, onClose, onChanged }: {
   };
 
   // 文字起こしのやり直し（幻覚ループ・言語ミス時のリカバリ）。audioId 指定でその音源だけ。
+  // language="keep" = ♻全更新（各音源の言語設定のまま全部やり直し + 資料も取り直して再要約）
   const redo = async (language: string, audioId?: string, label?: string) => {
     const target = audioId ? `音源「${label ?? ""}」` : "全音源";
-    if (!confirm(`${target}を${LANG_LABEL[language] ?? language}で再文字起こしします。現在の文字起こしと要約は上書きされます。よろしいですか？`)) return;
+    const how = language === "keep" ? "現在の言語設定のまま" : `${LANG_LABEL[language] ?? language}で`;
+    if (!confirm(`${target}を${how}再文字起こしします。現在の文字起こしと要約は上書きされます。よろしいですか？`)) return;
     try {
       await api("POST", "/api/notes/redo", { id, language, ...(audioId ? { audioId } : {}) });
       await load();
@@ -335,13 +338,6 @@ function NoteModal({ id, onClose, onChanged }: {
               <p className="hint">⏳ {STATUS_LABEL[note.status]}（自動更新されます）</p>
             )}
             {note.status === "error" && <p className="errline">{note.error}</p>}
-            {editing ? (
-              <textarea className="mono noteedit" value={draft} onChange={(e) => setDraft(e.target.value)} />
-            ) : note.content ? (
-              <div className="md"><ReactMarkdown remarkPlugins={[remarkGfm]}>{note.content}</ReactMarkdown></div>
-            ) : note.status === "done" ? (
-              <p className="hint">（本文なし）</p>
-            ) : null}
             {note.audios.length > 0 && (
               <div className="tsfold">
                 <p className="hint" style={{ margin: "4px 0" }}>🎙 音源（{note.audios.length}）</p>
@@ -359,10 +355,11 @@ function NoteModal({ id, onClose, onChanged }: {
                     </span>
                     {(note.status === "done" || note.status === "error") && (
                       <select
-                        className="btn" defaultValue="" title="この音源だけ再文字起こし"
+                        className="btn" defaultValue="" title="この音源だけ再文字起こし（他の音源は触らない）"
                         onChange={(e) => { if (e.target.value) { void redo(e.target.value, a.id, a.label ?? `#${a.seq}`); e.target.value = ""; } }}
                       >
                         <option value="" disabled>🔁</option>
+                        <option value="keep">そのまま再実行</option>
                         <option value="ja">日本語で</option>
                         <option value="en">英語で</option>
                         <option value="auto">自動判定で</option>
@@ -372,6 +369,13 @@ function NoteModal({ id, onClose, onChanged }: {
                 ))}
               </div>
             )}
+            {editing ? (
+              <textarea className="mono noteedit" value={draft} onChange={(e) => setDraft(e.target.value)} />
+            ) : note.content ? (
+              <div className="md"><ReactMarkdown remarkPlugins={[remarkGfm]}>{note.content}</ReactMarkdown></div>
+            ) : note.status === "done" ? (
+              <p className="hint">（本文なし）</p>
+            ) : null}
             {note.transcript && (
               <div className="tsfold">
                 <button className="link" onClick={() => setShowTranscript((v) => !v)}>
@@ -386,15 +390,20 @@ function NoteModal({ id, onClose, onChanged }: {
           <div className="modal-foot">
             <button className="link-danger" onClick={() => void del()}>削除</button>
             {note.hasAudio && !editing && (note.status === "done" || note.status === "error") && (
-              <select
-                className="btn" defaultValue="" title="文字起こしをやり直す（幻覚ループ・言語ミス時）"
-                onChange={(e) => { if (e.target.value) { void redo(e.target.value); e.target.value = ""; } }}
-              >
-                <option value="" disabled>🔁 再文字起こし…</option>
-                <option value="ja">日本語で</option>
-                <option value="en">英語で</option>
-                <option value="auto">自動判定で</option>
-              </select>
+              <>
+                <button className="btn"
+                  title="全更新 — 全音源を各言語設定のまま再文字起こしし、フォルダの資料も取り直して要約を作り直します"
+                  onClick={() => void redo("keep")}>♻ 全更新</button>
+                <select
+                  className="btn" defaultValue="" title="言語を変えて全音源をやり直す（幻覚ループ・言語ミス時）"
+                  onChange={(e) => { if (e.target.value) { void redo(e.target.value); e.target.value = ""; } }}
+                >
+                  <option value="" disabled>🔁 言語変更…</option>
+                  <option value="ja">日本語で</option>
+                  <option value="en">英語で</option>
+                  <option value="auto">自動判定で</option>
+                </select>
+              </>
             )}
             {!editing && (note.status === "done" || note.status === "error") && (
               <>
@@ -785,7 +794,7 @@ export default function NotesClient() {
       <div className="scrollwrap">
       <div className="page">
         {err && <p className="errline">{err}</p>}
-        <AudioUpload onStarted={() => void reload()} />
+        <AudioUpload onStarted={(noteId) => { void reload(); if (noteId) setOpen(noteId); }} />
         <CourseFoldersCard selected={filter} onSelect={setFilter}
           onOpenNote={setOpen} onNotesChanged={() => void reload()} />
         <MaterialsCard />

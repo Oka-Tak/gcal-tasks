@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
   if (uploadError) return Response.json({ detail: uploadError }, { status: 400 });
 
   try {
-    const id = await ingestAudioNote({
+    const res = await ingestAudioNote({
       files: await Promise.all(
         files.map(async (f, i) => ({
           buf: Buffer.from(await f.arrayBuffer()),
@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
       eventLabel: (form.get("eventLabel") as string) || null,
       notebook: (form.get("notebook") as string) || null,
     });
-    return Response.json({ id });
+    return Response.json(res); // {id, merged, title} — 合流時はUIが行き先を知らせる
   } catch (e) {
     return Response.json({ detail: String(e) }, { status: 400 });
   }

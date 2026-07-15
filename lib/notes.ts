@@ -484,7 +484,7 @@ export async function ingestAudioNote(opts: {
   eventKey?: string | null;
   eventLabel?: string | null; // e.g. "狩野研先端 7/2 14:25" — context for the summary
   notebook?: string | null; // Open WebUI collection override (packing)
-}): Promise<string> {
+}): Promise<{ id: string; merged: boolean; title: string }> {
   if (opts.files.length === 0) throw new Error("音声ファイルがありません");
   const title0 = opts.title || opts.files[0].filename;
 
@@ -501,7 +501,7 @@ export async function ingestAudioNote(opts: {
       if (existing && !existing.deletedAt) {
         console.log(`[notes] 既存ノート「${existing.title}」へ音源を合流 (${title0})`);
         await addAudiosToNote(existing.id, opts.files);
-        return existing.id;
+        return { id: existing.id, merged: true, title: existing.title ?? "(無題)" };
       }
     }
   } catch (e) {
@@ -529,10 +529,10 @@ export async function ingestAudioNote(opts: {
 
   // フォルダ⇔ノート1対1: 先に紐付けてから流す（要約がフォルダの資料テキストを拾える）
   const nb = notebookFor(opts.notebook, opts.eventKey);
-  await bindToResolvedFolder(id, nb, opts.eventKey ?? null, opts.title || opts.files[0].filename);
+  await bindToResolvedFolder(id, nb, opts.eventKey ?? null, title0);
   // detached — the UI polls /api/notes for status
-  void pipeline(id, opts.title || opts.files[0].filename, opts.eventLabel ?? null, nb);
-  return id;
+  void pipeline(id, title0, opts.eventLabel ?? null, nb);
+  return { id, merged: false, title: title0 };
 }
 
 /** 既存ノートに音源を追加し、文字起こし→再結合→再要約する。 */
@@ -609,6 +609,7 @@ export async function resumeInterruptedNotes(): Promise<void> {
 /**
  * 音声が残っているノートを再文字起こし（言語・アンチループ設定を変えてやり直す）。
  * audioId 指定でその音源だけ、省略で全音源をやり直し、結合・要約し直す。
+ * language="keep" は各音源の言語設定を変えずにやり直す（♻全更新用）。
  */
 export function redoTranscription(id: string, language = "ja", audioId?: string | null): boolean {
   const r = db.select().from(notes).where(eq(notes.id, id)).get();
@@ -617,7 +618,10 @@ export function redoTranscription(id: string, language = "ja", audioId?: string 
   const targets = audioId ? rows.filter((a) => a.id === audioId) : rows;
   if (targets.length === 0) return false;
   for (const a of targets) {
-    db.update(noteAudios).set({ status: "pending", language, error: null }).where(eq(noteAudios.id, a.id)).run();
+    db.update(noteAudios)
+      .set({ status: "pending", error: null, ...(language !== "keep" && { language }) })
+      .where(eq(noteAudios.id, a.id))
+      .run();
   }
   setStatus(id, "transcribing", { error: null });
   void pipeline(id, r.title ?? "(無題)", null, r.notebook ?? notebookFor(null, r.eventKey));
