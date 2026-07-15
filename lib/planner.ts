@@ -1,6 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "./db";
 import { events, tasks } from "./db/schema";
+import { committedFutureMinutes } from "./plan-commit";
 import { dayMatches, listRoutines } from "./routines";
 import { parentTaskIdentity, taskIdentity } from "./task-identity";
 
@@ -160,13 +161,19 @@ export function buildPlan(horizonDays = 3): PlanResult {
       });
     }
   }
+  // 📌確定済み（Kairos プランのGoogle予定）の分数は残り見積りから差し引く —
+  // 確定枠は予定として既に「埋まった時間」になっており、二重に置かない。
+  const committed = committedFutureMinutes(now);
+  const remaining = items
+    .map((w) => ({ ...w, estMin: w.estMin - (committed.get(w.taskKey) ?? 0) }))
+    .filter((w) => w.estMin > 0);
   const key = (w: WorkItem) =>
     `${w.asap ? "0" : "1"}|${w.dueYmd ? `${w.dueYmd}T${w.dueTime ?? "23:59"}` : "9999"}|${9 - w.priority}|${String(w.seq).padStart(3, "0")}`;
-  items.sort((a, b) => key(a).localeCompare(key(b)));
+  remaining.sort((a, b) => key(a).localeCompare(key(b)));
 
   const blocks: PlanBlock[] = [];
   const warnings: string[] = [];
-  for (const w of items) {
+  for (const w of remaining) {
     let remain = Math.max(SLOT_MIN_MIN, w.estMin) * 60_000;
     const limit = w.dueYmd ? new Date(`${w.dueYmd}T${w.dueTime ?? "23:59"}:00`).getTime() : Number.POSITIVE_INFINITY;
     for (const slot of slots) {

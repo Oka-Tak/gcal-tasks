@@ -610,3 +610,6 @@ textarea.mono,input.mono{font-family:var(--mono);font-size:12px}
 .planov span{display:block;font-size:9.5px;line-height:1.25;color:var(--muted);padding:1px 4px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .planbtn.on{border-color:var(--accent-dim);color:var(--accent)}
+.planrow .pinbtn{flex:none;border:none;background:none;cursor:pointer;font-size:11px;
+  opacity:.35;padding:0 2px;line-height:1}
+.planrow:hover .pinbtn{opacity:1}

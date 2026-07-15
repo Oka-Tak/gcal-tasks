@@ -134,6 +134,12 @@ export async function updateTask(b: TaskWrite & { id: string }): Promise<void> {
   }
   await syncTasks(b.account, b.tasklist); // refresh Google fields, preserve local-only
   applyTaskLocal(b.account, b.tasklist, b.id, b);
+  if (b.status === "completed") {
+    // 完了したタスクの未来の📌確定枠（Kairos プランのGoogle予定）は自動で消す
+    void import("./plan-commit")
+      .then((m) => m.deleteFuturePlanBlocks(`${b.account}|${b.tasklist}|${b.id}`))
+      .catch((e) => console.log("[plan-commit] cleanup failed:", String(e).slice(0, 120)));
+  }
 }
 
 export interface EventWrite {

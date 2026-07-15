@@ -141,14 +141,11 @@ export async function checkMorningBriefing(force = false): Promise<boolean> {
   const muted = muteMatcher();
   const evLines = todayEvents(now, muted);
   const taskLines = dueTasks(now, muted);
-  const planLines = (() => {
+  // プランは「予定の仮決め案」なのでブリーフィングには載せない（📌確定分は
+  // 予定として上の欄に出る）。期限に収まらない警告だけは行動が必要なので残す。
+  const planWarnings = (() => {
     try {
-      const p = buildPlan(1);
-      const todayBlocks = p.blocks.filter((b) => !muted(b.title)).slice(0, 8);
-      const lines = todayBlocks.map((b) =>
-        b.kind === "deadline" ? `・${hm(b.startMs)} ⏰ ${b.title}` : `・${hm(b.startMs)}-${hm(b.endMs)} ${b.title}`,
-      );
-      return [...lines, ...p.warnings.slice(0, 3).map((w) => `・⚠ ${w}`)];
+      return buildPlan(1).warnings.slice(0, 3).map((w) => `・⚠ ${w}`);
     } catch {
       return [];
     }
@@ -159,8 +156,7 @@ export async function checkMorningBriefing(force = false): Promise<boolean> {
   const body = [
     evLines.length ? "📅 今日の予定" : "📅 今日の予定はありません",
     ...evLines,
-    ...(taskLines.length ? ["", "⏰ 近い締切", ...taskLines] : []),
-    ...(planLines.length ? ["", "🧭 今日のプラン（空き時間の割り当て）", ...planLines] : []),
+    ...(taskLines.length || planWarnings.length ? ["", "⏰ 近い締切", ...taskLines, ...planWarnings] : []),
     ...(recap.length ? ["", "🌙 昨日", ...recap] : []),
     ...(ai ? ["", `💡 ${ai}`] : []),
   ].join("\n");

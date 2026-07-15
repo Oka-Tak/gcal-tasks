@@ -826,6 +826,22 @@ function PlanCard({ refreshKey }: { refreshKey: unknown }) {
     }
   };
 
+  // 📌確定: 流動プランのブロックを「Kairos プラン」カレンダーのGoogle予定に昇格
+  const [pinning, setPinning] = useState<string | null>(null);
+  const pin = async (b: PlanBlock) => {
+    setPinning(`${b.taskKey}:${b.startMs}`);
+    setMsg(null);
+    try {
+      await api("POST", "/api/plan/commit", { taskKey: b.taskKey, startMs: b.startMs, endMs: b.endMs });
+      setMsg(`📌 ${hmOf(b.startMs)}-${hmOf(b.endMs)} を予定として確定しました`);
+      reload();
+    } catch (e) {
+      setMsg(String((e as Error).message ?? e).slice(0, 150));
+    } finally {
+      setPinning(null);
+    }
+  };
+
   if (!plan) return null;
   const today = new Date(plan.generatedAt); today.setHours(23, 59, 59, 0);
   const todays = plan.blocks.filter((b) => b.startMs <= today.getTime()).slice(0, 6);
@@ -861,6 +877,11 @@ function PlanCard({ refreshKey }: { refreshKey: unknown }) {
           <div key={i} className={`planrow${b.kind === "deadline" ? " dl" : ""}${b.endMs <= plan.generatedAt ? " past" : ""}`}>
             <span className="pt">{b.kind === "deadline" ? `${hmOf(b.startMs)} ⏰` : `${hmOf(b.startMs)}-${hmOf(b.endMs)}`}</span>
             <span className="pl">{b.title}</span>
+            {b.kind === "task" && b.taskKey && b.endMs > plan.generatedAt && (
+              <button className="pinbtn" disabled={pinning != null}
+                title="この枠で確定 — 「Kairos プラン」カレンダーの予定になり、プランの組み直しで動かなくなります"
+                onClick={() => void pin(b)}>{pinning === `${b.taskKey}:${b.startMs}` ? "…" : "📌"}</button>
+            )}
           </div>
         ))}
         {todays.length === 0 && <p className="hint" style={{ margin: 0 }}>今日はもう割り当てなし</p>}
