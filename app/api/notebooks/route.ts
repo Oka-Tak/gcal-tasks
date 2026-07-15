@@ -8,6 +8,7 @@ import { notes } from "@/lib/db/schema";
 import { env } from "@/lib/env";
 import { courseView } from "@/lib/course-sessions";
 import { createNoteForFolder, queueFolderNotes } from "@/lib/folder-notes";
+import { generateCourseSummary } from "@/lib/course-note";
 
 export const runtime = "nodejs";
 
@@ -17,6 +18,7 @@ export const runtime = "nodejs";
  * GET ?course=X  → 回別ビュー（カレンダー由来の第N回 + フォルダ・ファイル・ノート対応）
  * POST {course, ymd}                → その回のフォルダからノートを即時作成
  * POST {course, ymd, prepare:true}  → その回のフォルダだけ作成（資料置き場の準備）
+ * POST {course, summary:true}       → 授業全体の総まとめノート（テスト対策）を生成
  * POST {course, bulk:true}          → 資料があるのにノートが無い回を一括キュー
  *                                     （5分毎スキャンが2件/回のペースで消化）
  */
@@ -74,10 +76,20 @@ export async function POST(req: NextRequest) {
   const root = env.notesExportDir;
   if (!root) return Response.json({ detail: "KAIROS_NOTES_EXPORT 未設定" }, { status: 400 });
   const body = (await req.json().catch(() => null)) as
-    | { course?: string; ymd?: string; prepare?: boolean; bulk?: boolean }
+    | { course?: string; ymd?: string; prepare?: boolean; bulk?: boolean; summary?: boolean }
     | null;
   const course = path.basename((body?.course ?? "").trim());
   if (!course) return Response.json({ detail: "course が必要です" }, { status: 400 });
+
+  if (body?.summary) {
+    // 授業全体の総まとめノート（テスト対策）— 全回のノートを横断して1本生成
+    try {
+      const noteId = await generateCourseSummary(course);
+      return Response.json({ noteId });
+    } catch (e) {
+      return Response.json({ detail: String((e as Error).message ?? e) }, { status: 400 });
+    }
+  }
 
   if (body?.bulk) {
     const view = await courseView(course);

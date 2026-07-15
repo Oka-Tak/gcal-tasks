@@ -335,7 +335,16 @@ function NoteModal({ id, onClose, onChanged }: {
         {!note ? <p className="hint">読み込み中…</p> : (
           <div className="notebody">
             {(note.status === "transcribing" || note.status === "summarizing") && (
-              <p className="hint">⏳ {STATUS_LABEL[note.status]}（自動更新されます）</p>
+              <p className="hint" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                ⏳ {STATUS_LABEL[note.status]}（自動更新されます）
+                {note.status === "transcribing" && (
+                  <button className="btn" title="文字起こしを停止（音源は残ります。🔁そのまま再実行 や ♻全更新 で再開できます）"
+                    onClick={() => {
+                      void api("POST", "/api/notes/stop", { id }).then(() => { void load(); onChanged(); })
+                        .catch((e) => setErr(String((e as Error).message ?? e).slice(0, 150)));
+                    }}>⏹ 停止</button>
+                )}
+              </p>
             )}
             {note.status === "error" && <p className="errline">{note.error}</p>}
             {note.audios.length > 0 && (
@@ -620,7 +629,18 @@ function CourseFoldersCard({ selected, onSelect, onOpenNote, onNotesChanged }: {
                   {view.otherFolders.map((o) => `📁${o.name}(${o.files})`).join(" ")}
                 </p>
               )}
-              <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6, flexWrap: "wrap" }}>
+                <button className="btn" disabled={busy != null}
+                  title="全回のノートを横断して試験対策の総まとめノートを生成（再実行で作り直し）"
+                  onClick={() => {
+                    setBusy("summary");
+                    void api("POST", "/api/notebooks", { course: openCourse, summary: true })
+                      .then((r) => { onOpenNote(r.noteId); onNotesChanged(); })
+                      .catch((e) => setMsg(String((e as Error).message ?? e).slice(0, 150)))
+                      .finally(() => setBusy(null));
+                  }}>
+                  {busy === "summary" ? "…" : "📚 総まとめ（テスト対策）"}
+                </button>
                 {creatable > 1 && (
                   <button className="btn" disabled={busy != null} onClick={() => void bulk()}>
                     {busy === "bulk" ? "…" : `資料がある${creatable}回分をまとめてノート化`}

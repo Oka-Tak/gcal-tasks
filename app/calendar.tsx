@@ -407,15 +407,23 @@ export default function Calendar() {
   // 🧭プラン overlay: /api/plan のタスク配置をこの日の分オフセットに変換
   function dayPlan(day: Date) {
     const dayStart = startOfDay(day).getTime();
-    const out: { key: string; label: string; s: number; e: number }[] = [];
+    const out: { key: string; label: string; s: number; e: number; taskKey?: string }[] = [];
     for (const b of planBlocks) {
       if (b.kind !== "task") continue;
       const s = Math.max(0, Math.round((b.startMs - dayStart) / 60000));
       const e = Math.min(1440, Math.round((b.endMs - dayStart) / 60000));
       if (e <= 0 || s >= 1440 || e - s < 10) continue;
-      out.push({ key: `p:${b.startMs}:${b.taskKey ?? ""}`, label: b.title, s, e });
+      out.push({ key: `p:${b.startMs}:${b.taskKey ?? ""}`, label: b.title, s, e, taskKey: b.taskKey });
     }
     return out;
+  }
+
+  // プランブロックのクリック → そのタスクを開く（「予定に見えるのに押せない」対策）
+  function openPlanTask(taskKey?: string) {
+    if (!taskKey) return;
+    const [account, tasklist, id] = taskKey.split("|");
+    const t = tasks.find((x) => x.account === account && x.tasklist === tasklist && x.id === id);
+    if (t) openTask(t);
   }
 
   // 裏カレンダー: logs clamped to this day's 0–1440 minute window
@@ -510,6 +518,7 @@ export default function Calendar() {
                 tasksDue={showActual ? () => [] : tasksDue}
                 dayTimed={showActual ? dayActuals : dayTimed}
                 planFor={!showActual && showPlan ? dayPlan : undefined}
+                onPlanClick={openPlanTask}
                 onEvent={openDetail} onTask={openTask}
                 onSlot={showActual ? () => {} : (d) => openEvent(undefined, d)} />}
         </div>
@@ -597,10 +606,11 @@ function TimeView(props: {
   view: View; anchor: Date; events: Ev[];
   tasksDue: (d: Date) => Task[];
   dayTimed: (d: Date) => { key: string; color: string; label: string; s: number; e: number; isTask: boolean; done: boolean; onClick: () => void }[];
-  planFor?: (d: Date) => { key: string; label: string; s: number; e: number }[];
+  planFor?: (d: Date) => { key: string; label: string; s: number; e: number; taskKey?: string }[];
+  onPlanClick?: (taskKey?: string) => void;
   onEvent: (e: Ev) => void; onTask: (t: Task) => void; onSlot: (d: Date) => void;
 }) {
-  const { view, anchor, events, tasksDue, dayTimed, planFor, onEvent, onTask, onSlot } = props;
+  const { view, anchor, events, tasksDue, dayTimed, planFor, onPlanClick, onEvent, onTask, onSlot } = props;
   const ds = viewDays(view, anchor);
   const cols = `var(--gutter) repeat(${ds.length},1fr)`;
   const now = new Date();
@@ -654,8 +664,10 @@ function TimeView(props: {
                 ))}
                 {/* 🧭プラン: 空き時間へのタスク自動配置（薄い点線、クリック透過） */}
                 {planFor?.(d).map((p) => (
-                  <div key={p.key} className="planov"
-                    style={{ top: `${p.s / 60 * HOUR_H}px`, height: `${(p.e - p.s) / 60 * HOUR_H - 2}px` }}>
+                  <div key={p.key} className={`planov${p.taskKey ? " clickable" : ""}`}
+                    title={`🧭 プラン（仮）: ${p.label} — クリックでタスクを開く。📌はプランカードから`}
+                    style={{ top: `${p.s / 60 * HOUR_H}px`, height: `${(p.e - p.s) / 60 * HOUR_H - 2}px` }}
+                    onClick={(ev) => { ev.stopPropagation(); onPlanClick?.(p.taskKey); }}>
                     <span>🧭 {p.label}</span>
                   </div>
                 ))}

@@ -204,7 +204,11 @@ export function diarizeEnabled(): boolean {
   return env.whisperxDiarize && !!env.hfToken;
 }
 
-function runWhisperx(audioAbs: string, outDir: string, language = "ja"): Promise<{ ok: boolean; err: string }> {
+// 停止ボタン用: 実行中の whisperx プロセス（audioId → child）と停止要求
+const wxProcs = new Map<string, ReturnType<typeof spawn>>();
+const stopRequested = new Set<string>();
+
+function runWhisperx(audioAbs: string, outDir: string, language = "ja", audioId?: string): Promise<{ ok: boolean; err: string }> {
   return new Promise((resolve) => {
     const dia = diarizeEnabled();
     const args = [
@@ -229,6 +233,7 @@ function runWhisperx(audioAbs: string, outDir: string, language = "ja"): Promise
       resolve({ ok: false, err: String(e) });
       return;
     }
+    if (audioId) wxProcs.set(audioId, child);
     let stderr = "";
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
@@ -238,6 +243,7 @@ function runWhisperx(audioAbs: string, outDir: string, language = "ja"): Promise
     child.on("error", (e) => { clearTimeout(timer); resolve({ ok: false, err: String(e) }); });
     child.on("close", (code) => {
       clearTimeout(timer);
+      if (audioId) wxProcs.delete(audioId);
       resolve({ ok: code === 0, err: code === 0 ? "" : stderr.slice(-2000) });
     });
   });
@@ -322,7 +328,7 @@ async function transcribeOne(a: AudioRow): Promise<void> {
   const outDir = path.join(path.dirname(a.audioPath), `wx-${a.id}`);
   db.update(noteAudios).set({ status: "transcribing", error: null }).where(eq(noteAudios.id, a.id)).run();
   try {
-    const wx = await runWhisperx(a.audioPath, outDir, a.language ?? "ja");
+    const wx = await runWhisperx(a.audioPath, outDir, a.language ?? "ja", a.id);
     if (!wx.ok) {
       db.update(noteAudios).set({ status: "error", error: wx.err.slice(0, 500) }).where(eq(noteAudios.id, a.id)).run();
       return;
@@ -372,6 +378,10 @@ async function pipeline(noteId: string, title: string, eventLabel: string | null
   inFlight.add(noteId);
   try {
     for (;;) {
+      if (stopRequested.delete(noteId)) {
+        setStatus(noteId, "error", { error: "手動停止しました（🔁そのまま再実行 や ♻全更新 で再開できます）" });
+        return;
+      }
       const next = audioRows(noteId).find((a) => a.status === "pending" || a.status === "transcribing");
       if (!next) break;
       await transcribeOne(next);
@@ -574,6 +584,37 @@ export function createManualNote(opts: { title: string; content?: string; eventK
     });
   }
   return id;
+}
+
+/**
+ * ⏹停止: 実行中の文字起こしを中断する。whisperx を kill し、待機中の音源には
+ * 「手動停止」を刻む。音源自体は残るので 🔁そのまま再実行 / ♻全更新 で再開可能。
+ */
+export function stopTranscription(id: string): boolean {
+  const r = db.select().from(notes).where(eq(notes.id, id)).get();
+  if (!r || r.deletedAt || r.status !== "transcribing") return false;
+  stopRequested.add(id);
+  let killed = false;
+  for (const a of audioRows(id)) {
+    if (a.status === "transcribing" && wxProcs.has(a.id)) {
+      wxProcs.get(a.id)?.kill("SIGKILL");
+      killed = true;
+    }
+    if (a.status === "pending") {
+      db.update(noteAudios).set({ status: "error", error: "手動停止" }).where(eq(noteAudios.id, a.id)).run();
+    }
+  }
+  if (!killed) {
+    // このプロセスに実行中のwhisperxが居ない（再起動直後など）— 直接止める
+    stopRequested.delete(id);
+    db.update(noteAudios)
+      .set({ status: "error", error: "手動停止" })
+      .where(and(eq(noteAudios.noteId, id), eq(noteAudios.status, "transcribing")))
+      .run();
+    setStatus(id, "error", { error: "手動停止しました（🔁そのまま再実行 や ♻全更新 で再開できます）" });
+  }
+  console.log(`[notes] ⏹手動停止: ${r.title}`);
+  return true;
 }
 
 /**

@@ -615,3 +615,5 @@ textarea.mono,input.mono{font-family:var(--mono);font-size:12px}
 .planrow:hover .pinbtn{opacity:1}
 .modal-foot{flex-wrap:wrap}
 .modal-foot .btn{white-space:nowrap}
+.planov.clickable{pointer-events:auto;cursor:pointer}
+.planov.clickable:hover{background:rgba(45,224,167,.14);border-color:rgba(45,224,167,.7)}
