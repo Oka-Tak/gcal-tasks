@@ -3,7 +3,8 @@ import { and, desc, gte, isNull, lt } from "drizzle-orm";
 import { eq } from "drizzle-orm";
 import { db } from "./db";
 import { expenses } from "./db/schema";
-import { extractJson, runAgent } from "./agent";
+import { extractJson } from "./agent";
+import { runVisionAuto } from "./vision";
 import { CATEGORY_LABEL, EXPENSE_CATEGORIES, isExpenseCategory } from "./money-shared";
 import { InputError } from "./write-validation";
 
@@ -154,23 +155,36 @@ export async function extractExpenseFromImage(imageAbs: string): Promise<{
   jobId: string;
 }> {
   const nowISO = new Date().toISOString();
-  const res = await runAgent(
-    [
+  const spec = [
+    `読み取れる【支払い】を、次の JSON 配列だけで出力してください（前後に文章・コードフェンス不要）。`,
+    `[{`,
+    `  "amountYen": 支払額の数値(円),`,
+    `  "category": "${EXPENSE_CATEGORIES.join('" | "')}",`,
+    `  "title": "店名や品目の短い見出し",`,
+    `  "note": "補足（任意）",`,
+    `  "when": "支払日時 ISO8601 ローカル 例 2026-07-06T12:30:00（読めなければ null）"`,
+    `}]`,
+    `複数の支払いが写っていれば複数要素。合計と明細が両方見える場合は合計1件にする。`,
+    `読み取れない場合は [] を返す。推測で金額を作らないこと。`,
+  ].join("\n");
+  // claude limit時はローカルOCR+別LLMへ自動フォールバック（docs/AGENT-FALLBACK.md）
+  const res = await runVisionAuto({
+    visionPrompt: [
       `今日は ${nowISO} です（参照用）。`,
       `画像ファイル ${imageAbs} を Read ツールで開いてください。レシート、または決済アプリ（PayPay等）・ネット通販の支払い画面のスクリーンショットです。`,
-      `読み取れる【支払い】を、次の JSON 配列だけで出力してください（前後に文章・コードフェンス不要）。`,
-      `[{`,
-      `  "amountYen": 支払額の数値(円),`,
-      `  "category": "${EXPENSE_CATEGORIES.join('" | "')}",`,
-      `  "title": "店名や品目の短い見出し",`,
-      `  "note": "補足（任意）",`,
-      `  "when": "支払日時 ISO8601 ローカル 例 2026-07-06T12:30:00（読めなければ null）"`,
-      `}]`,
-      `複数の支払いが写っていれば複数要素。合計と明細が両方見える場合は合計1件にする。`,
-      `読み取れない場合は [] を返す。推測で金額を作らないこと。`,
+      spec,
     ].join("\n"),
-    { agent: "claude", allowedTools: ["Read"], imagePaths: [imageAbs], jobKind: "extract-expense" },
-  );
+    ocrPrompt: (ocrText) => [
+      `今日は ${nowISO} です（参照用）。`,
+      `以下はレシート/決済画面のスクリーンショットをOCRしたテキストです（行順は画面の上から。誤認識を含みます）。`,
+      spec,
+      ``,
+      `# OCRテキスト`,
+      ocrText,
+    ].join("\n"),
+    imageAbs,
+    jobKind: "extract-expense",
+  });
   if (!res.ok) return { drafts: [], ok: false, error: res.error, jobId: res.jobId };
   const parsed = extractJson<RawExpense[]>(res.text);
   if (!Array.isArray(parsed)) return { drafts: [], ok: false, error: "抽出結果をJSONとして解釈できませんでした", jobId: res.jobId };

@@ -812,6 +812,14 @@ const hmOf = (ms: number) => { const d = new Date(ms); return `${pad(d.getHours(
  */
 function PlanCard({ refreshKey }: { refreshKey: unknown }) {
   const [plan, setPlan] = useState<PlanResp | null>(null);
+  // 非表示（折りたたみ）: ヘッダー1行だけ残して本体を隠す。設定は永続化。
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (localStorage.getItem("kairos-plan-card") === "min") setCollapsed(true);
+  }, []);
+  const toggleCollapsed = () =>
+    setCollapsed((v) => { localStorage.setItem("kairos-plan-card", v ? "open" : "min"); return !v; });
   const [openRoutines, setOpenRoutines] = useState(false);
   const [enriching, setEnriching] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -857,10 +865,23 @@ function PlanCard({ refreshKey }: { refreshKey: unknown }) {
   if (!plan) return null;
   const today = new Date(plan.generatedAt); today.setHours(23, 59, 59, 0);
   const todays = plan.blocks.filter((b) => b.startMs <= today.getTime()).slice(0, 6);
+  if (collapsed) {
+    return (
+      <div className="card plancard plancard-min">
+        <button className="plancard-head" onClick={toggleCollapsed} title="クリックで展開">
+          <h3 style={{ margin: 0, flex: 1, textAlign: "left" }}>🧭 今やること</h3>
+          <span className="hint" style={{ margin: 0 }}>▸</span>
+        </button>
+      </div>
+    );
+  }
   return (
     <div className="card plancard">
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <h3 style={{ margin: 0, flex: 1 }}>🧭 今やること</h3>
+        <button className="plancard-head" style={{ flex: 1 }} onClick={toggleCollapsed} title="クリックで折りたたみ">
+          <h3 style={{ margin: 0, flex: 1, textAlign: "left" }}>🧭 今やること</h3>
+          <span className="hint" style={{ margin: 0 }}>▾</span>
+        </button>
         <button className="btn" disabled={enriching} onClick={() => void enrich()}
           title="締切ありタスクをRAG(授業ノート等)でクロールして見積り・優先度をAI推定">
           {enriching ? "推定中…" : "🤖 AI推定"}
@@ -1328,6 +1349,51 @@ function TaskModal({ isNew, draft, set, subtasks, onToggleSub, onOpenSub, onAddS
   );
 }
 
+/**
+ * バックグラウンドAI（要約・推定・取り込み等）のフォールバック優先順位。
+ * claudeがlimitでも次のエージェントに自動で流れる。詳細: docs/AGENT-FALLBACK.md
+ */
+function AgentPriorityEditor() {
+  const [order, setOrder] = useState("");
+  const [probe, setProbe] = useState(true);
+  const [msg, setMsg] = useState<string | null>(null);
+  useEffect(() => {
+    api("GET", "/api/agents").then((r) => {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setOrder((r.priority?.order ?? []).map((s: { agent: string }) => s.agent).join(", "));
+      setProbe(r.priority?.probe !== false);
+    }).catch(() => {});
+  }, []);
+  const save = async () => {
+    setMsg("保存中…");
+    try {
+      const r = await api("PUT", "/api/agents", { order: order.split(/[,\s]+/).filter(Boolean), probe });
+      setOrder(r.priority.order.map((s: { agent: string }) => s.agent).join(", "));
+      setMsg(`保存しました: ${r.priority.order.map((s: { agent: string }) => s.agent).join(" → ")}`);
+    } catch (e) {
+      setMsg(String((e as Error).message ?? e).slice(0, 150));
+    }
+  };
+  return (
+    <div>
+      <div className="acct-row">
+        <input style={{ flex: 1 }} value={order} onChange={(e) => setOrder(e.target.value)}
+          placeholder="claude, codex, copilot, agy" />
+        <button className="btn" onClick={() => void save()}>保存</button>
+      </div>
+      <div className="chk" style={{ margin: "4px 0 0" }}>
+        <input type="checkbox" id="probe-chk" checked={probe} onChange={(e) => setProbe(e.target.checked)} />
+        <label htmlFor="probe-chk" style={{ margin: 0 }}>実行前に最安モデルで生存確認（プローブ、結果は10分キャッシュ）</label>
+      </div>
+      <p className="hint" style={{ margin: "4px 0 0" }}>
+        要約・タスク推定・写真取り込みなどのバックグラウンドAIは、この順に試して失敗したら次へ流れます。
+        claudeがlimitのときは自動で2番手以降へ。画像系はclaude不調時ローカルOCR+テキストLLMに切り替わります。
+      </p>
+      {msg && <p className="hint" style={{ margin: "4px 0 0" }}>{msg}</p>}
+    </div>
+  );
+}
+
 function AccountsModal({ accounts, onClose, onDisconnect, onSignOut }: {
   accounts: Account[]; onClose: () => void; onDisconnect: (e: string) => void; onSignOut: () => void;
 }) {
@@ -1380,6 +1446,8 @@ function AccountsModal({ accounts, onClose, onDisconnect, onSignOut }: {
         <button className="btn" disabled={!notify?.enabled} onClick={() => void sendTest()}>テスト送信</button>
       </div>
       {testMsg && <p className="hint" style={{ margin: "4px 0 0" }}>{testMsg}</p>}
+      <h3 style={{ marginTop: 18 }}>バックグラウンドAIの優先順位</h3>
+      <AgentPriorityEditor />
       <div className="field" style={{ marginTop: 10 }}>
         <label>通知ミュート（カンマ区切りのキーワード）</label>
         <input

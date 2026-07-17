@@ -470,6 +470,41 @@ export const BG_FALLBACK: AgentStep[] = [
   { agent: "agy", model: "Gemini 3.5 Flash", effort: "Medium" },
 ];
 
+/**
+ * 生存確認プローブ: 各エージェントの最安モデルに「1+1」を投げて動くか見る。
+ * limit到達・CLI故障・認証切れを数秒で検知して次の段へ渡すため。
+ * 結果はキャッシュ（成功10分・失敗3分）。実呼び出しの成否でも上書きするので、
+ * 定常時のプローブ頻度はごく低い。
+ */
+const PROBE_MODELS: Record<AgentName, { model?: string; effort?: string }> = {
+  claude: { model: "haiku", effort: "low" },
+  codex: { model: "gpt-5.4-mini", effort: "low" },
+  copilot: { model: "auto" },
+  agy: { model: "Gemini 3.5 Flash", effort: "Low" },
+};
+const PROBE_OK_MS = 10 * 60_000;
+const PROBE_FAIL_MS = 3 * 60_000;
+const gp = globalThis as unknown as { __agentProbe?: Map<AgentName, { ok: boolean; at: number }> };
+const probeCache = () => (gp.__agentProbe ??= new Map());
+
+export function noteAgentResult(agent: AgentName, ok: boolean): void {
+  probeCache().set(agent, { ok, at: Date.now() });
+}
+
+export async function probeAgent(agent: AgentName): Promise<boolean> {
+  const c = probeCache().get(agent);
+  if (c && Date.now() - c.at < (c.ok ? PROBE_OK_MS : PROBE_FAIL_MS)) return c.ok;
+  const res = await runAgent("1+1の答えを数字だけで出力して。", {
+    agent,
+    ...PROBE_MODELS[agent],
+    timeoutMs: 90_000,
+    jobKind: "probe",
+  });
+  noteAgentResult(agent, res.ok);
+  if (!res.ok) console.log(`[agent-probe] ${agent} 不調: ${(res.error ?? "").slice(0, 100)}`);
+  return res.ok;
+}
+
 /** claude の5時間枠残り%（プール内の最良アカウント）。取得失敗は null。 */
 async function bestClaudeRemaining(): Promise<number | null> {
   try {
@@ -489,11 +524,16 @@ async function bestClaudeRemaining(): Promise<number | null> {
 export async function runAgentAuto(
   prompt: string,
   opts: RunOptions = {},
-  chain: AgentStep[] = BG_FALLBACK,
+  chain?: AgentStep[],
   minClaudePct = Number(process.env.KAIROS_CLAUDE_MIN_PCT ?? 15),
 ): Promise<RunResult> {
+  // 優先順位は data/agent-priority.json（UI/APIで並び替え可）。明示chainはそれを上書き。
+  const { loadPriority } = await import("./agent-priority");
+  const cfg = loadPriority();
+  const steps = chain ?? cfg.order;
+  const probeOn = chain ? false : cfg.probe; // 明示chain（グラス用高速連鎖等）はプローブ無し
   let last: RunResult | null = null;
-  for (const step of chain) {
+  for (const step of steps) {
     if (step.agent === "claude") {
       const rem = await bestClaudeRemaining();
       if (rem != null && rem < minClaudePct) {
@@ -501,14 +541,20 @@ export async function runAgentAuto(
         continue;
       }
     }
+    // 生存確認: 最安モデルの素振りが通らないエージェントは飛ばす（結果はキャッシュ）
+    if (probeOn && !(await probeAgent(step.agent))) {
+      console.log(`[agent-auto] ${step.agent} プローブ不通 — ${opts.jobKind ?? "job"} を次へ`);
+      continue;
+    }
     const res = await runAgent(prompt, {
       ...opts,
       agent: step.agent,
-      model: step.agent === "claude" ? opts.model : step.model,
-      effort: step.agent === "claude" ? opts.effort : step.effort,
+      model: step.agent === "claude" ? (opts.model ?? step.model) : (step.model ?? opts.model),
+      effort: step.agent === "claude" ? (opts.effort ?? step.effort) : (step.effort ?? opts.effort),
       // claude 専用オプションは他エージェントに渡さない
       ...(step.agent !== "claude" ? { system: undefined, allowedTools: undefined, onEvent: undefined } : {}),
     });
+    noteAgentResult(step.agent, res.ok); // 実結果でプローブキャッシュを更新
     if (res.ok) {
       if (step.agent !== "claude") console.log(`[agent-auto] ${opts.jobKind ?? "job"} → ${step.agent} で完了`);
       return res;

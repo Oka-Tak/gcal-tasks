@@ -6,6 +6,7 @@ import { db } from "./db";
 import { logs } from "./db/schema";
 import { env } from "./env";
 import { runAgent, extractJson } from "./agent";
+import { runVisionAuto } from "./vision";
 import { serializeLog } from "./serialize";
 
 const UPLOAD_SUBDIR = "uploads";
@@ -55,10 +56,10 @@ function toMs(s: string | undefined | null): number | null {
   return Number.isNaN(ms) ? null : ms;
 }
 
-function buildSleepPrompt(imageAbs: string, nowISO: string): string {
+function buildSleepPrompt(source: string, nowISO: string): string {
   return [
     `今日は ${nowISO} です（参照用）。`,
-    `画像ファイル ${imageAbs} を Read ツールで開いてください。これはスマートウォッチ（Xiaomi）の睡眠記録のスクリーンショットです。`,
+    source,
     `読み取れる内容から、次の JSON オブジェクトだけを出力してください（前後に文章・コードフェンスを付けない）。`,
     `{`,
     `  "date": "YYYY-MM-DD（起床した日。読めなければ今日）",`,
@@ -82,10 +83,18 @@ export async function extractSleepFromImage(imageAbs: string): Promise<{
   raw: string;
 }> {
   const nowISO = new Date().toISOString();
-  const res = await runAgent(buildSleepPrompt(imageAbs, nowISO), {
-    agent: "claude",
-    allowedTools: ["Read"],
-    imagePaths: [imageAbs],
+  // claude limit時はローカルOCR+別LLMへ自動フォールバック（docs/AGENT-FALLBACK.md）
+  const res = await runVisionAuto({
+    visionPrompt: buildSleepPrompt(
+      `画像ファイル ${imageAbs} を Read ツールで開いてください。これはスマートウォッチ（Xiaomi）の睡眠記録のスクリーンショットです。`,
+      nowISO,
+    ),
+    ocrPrompt: (ocrText) =>
+      buildSleepPrompt(
+        `以下はスマートウォッチ（Xiaomi）の睡眠記録スクリーンショットをOCRしたテキストです（誤認識を含みます）。\n# OCRテキスト\n${ocrText}`,
+        nowISO,
+      ),
+    imageAbs,
     jobKind: "extract-sleep",
   });
   if (!res.ok) {

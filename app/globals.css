@@ -617,3 +617,6 @@ textarea.mono,input.mono{font-family:var(--mono);font-size:12px}
 .modal-foot .btn{white-space:nowrap}
 .planov.clickable{pointer-events:auto;cursor:pointer}
 .planov.clickable:hover{background:rgba(45,224,167,.14);border-color:rgba(45,224,167,.7)}
+.plancard-head{display:flex;align-items:center;gap:6px;border:none;background:none;
+  padding:0;cursor:pointer;font:inherit;color:inherit;min-width:0}
+.plancard.plancard-min{padding:10px 14px}
