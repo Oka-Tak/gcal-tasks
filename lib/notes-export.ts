@@ -112,10 +112,16 @@ async function dirNames(parent: string): Promise<string[]> {
  * 授業名 → 授業資料内の既存フォルダ名。表記ゆれ（AIシステム/AIシステムI等）は
  * 片方がもう片方を含むなら同一とみなす（最長一致を採用）。無ければ授業名のまま。
  */
-async function matchCourseDir(coursesRoot: string, course: string): Promise<string> {
+export async function matchCourseDir(coursesRoot: string, course: string): Promise<string> {
   const dirs = await dirNames(coursesRoot);
   if (dirs.includes(course)) return course;
-  const hits = dirs.filter((d) => d.includes(course) || course.includes(d));
+  // NFKC正規化で「AIシステムⅠ(ローマ数字)」と「AIシステムI(ASCII)」等の揺れを吸収
+  const norm = (s: string) => s.normalize("NFKC");
+  const nc = norm(course);
+  const hits = dirs.filter((d) => {
+    const nd = norm(d);
+    return nd.includes(nc) || nc.includes(nd);
+  });
   if (hits.length > 0) return hits.sort((a, b) => b.length - a.length)[0];
   return course;
 }

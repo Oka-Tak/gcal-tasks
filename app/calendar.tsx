@@ -1168,6 +1168,38 @@ function EventNotes({ ev }: { ev: Ev }) {
   );
 }
 
+/**
+ * 予定の説明はGoogleからHTMLで来ることがある（<br>や<a>が生のまま見えて
+ * 読めなかった実害） — タグを落として改行を戻し、URLはリンク化。長文は折りたたむ。
+ */
+function DescText({ html }: { html: string }) {
+  const [full, setFull] = useState(false);
+  const text = html
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|li|tr)>/gi, "\n")
+    .replace(/<a\s[^>]*href="([^"]+)"[^>]*>[\s\S]*?<\/a>/gi, " $1 ")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  const shown = full || text.length <= 420 ? text : text.slice(0, 420) + "…";
+  const parts = shown.split(/(https?:\/\/[^\s<>"）)]+)/g);
+  return (
+    <span style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+      {parts.map((p, i) =>
+        /^https?:\/\//.test(p)
+          ? <a key={i} href={p} target="_blank" rel="noopener noreferrer">{p.length > 60 ? p.slice(0, 57) + "…" : p}</a>
+          : p,
+      )}
+      {text.length > 420 && (
+        <button className="link" style={{ display: "block", marginTop: 4 }} onClick={() => setFull((v) => !v)}>
+          {full ? "▾ 折りたたむ" : "▸ すべて表示"}
+        </button>
+      )}
+    </span>
+  );
+}
+
 function DetailModal({ ev, calendars, accounts, onClose, onEdit }: { ev: Ev; calendars: Cal[]; accounts: Account[]; onClose: () => void; onEdit: () => void }) {
   const cal = calendars.find((c) => c.account === ev.account && c.id === ev.calendarId);
   const acct = accounts.find((a) => a.email === ev.account);
@@ -1198,7 +1230,7 @@ function DetailModal({ ev, calendars, accounts, onClose, onEdit }: { ev: Ev; cal
         {(cal || acct) && <div className="det-row"><span className="k">予定表</span><span className="v"><span className="acct-pill"><span className="dot" style={{ background: ev.color || "#4285f4" }} />{cal?.summary || ""}{acct ? ` · ${acct.email}` : ""}</span></span></div>}
         {ev.location && <div className="det-row"><span className="k">場所</span><span className="v">{ev.location}</span></div>}
         {ev.meet && <div className="det-row"><span className="k">通話</span><span className="v"><a href={ev.meet} target="_blank" rel="noopener noreferrer">{ev.meet}</a></span></div>}
-        {ev.description && <div className="det-row"><span className="k">詳細</span><span className="v">{ev.description}</span></div>}
+        {ev.description && <div className="det-row"><span className="k">詳細</span><span className="v"><DescText html={ev.description} /></span></div>}
         {ev.attendees?.length > 0 && (
           <div className="det-row"><span className="k">参加者</span><span className="v">
             {ev.attendees.map((a, i) => { const [c, g] = rs(a.response); return <div key={i} className="att"><span className={`rs ${c}`}>{g}</span><span>{a.name || a.email}{a.organizer ? " (主催)" : ""}</span></div>; })}

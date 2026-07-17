@@ -1,6 +1,6 @@
 import { type NextRequest } from "next/server";
 import { env } from "@/lib/env";
-import { importGakujoAssignments, importGakujoStructured } from "@/lib/gakujo-import";
+import { importGakujoAssignments, importGakujoDetail, importGakujoStructured, type GakujoDetail } from "@/lib/gakujo-import";
 import { secretMatches } from "@/lib/secret-compare";
 
 export const runtime = "nodejs";
@@ -31,7 +31,7 @@ export function OPTIONS(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const headers = { ...cors(req.headers.get("origin")), "Content-Type": "application/json" };
-  let body: { token?: string; text?: string; assignments?: unknown[] };
+  let body: { token?: string; text?: string; assignments?: unknown[]; detail?: GakujoDetail };
   try {
     body = await req.json();
   } catch {
@@ -39,6 +39,12 @@ export async function POST(req: NextRequest) {
   }
   if (!secretMatches(body.token ?? "", env.widgetToken))
     return new Response(JSON.stringify({ detail: "unauthorized" }), { status: 401, headers });
+
+  // 課題詳細（設問文）の取り込み — ユーザースクリプトv1.3.0の📚ボタン
+  if (body.detail) {
+    const r = await importGakujoDetail(body.detail);
+    return new Response(JSON.stringify(r), { status: r.ok ? 200 : 422, headers });
+  }
 
   // 構造化データ（ユーザースクリプトの決定論パース）優先。無ければテキストをAI抽出。
   const result = Array.isArray(body.assignments)

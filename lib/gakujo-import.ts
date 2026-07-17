@@ -1,6 +1,9 @@
 import crypto from "node:crypto";
-import { and, isNull, like } from "drizzle-orm";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { and, eq, isNull, like } from "drizzle-orm";
 import { db } from "./db";
+import { env } from "./env";
 import { tasklists, tasks } from "./db/schema";
 import { runAgentAuto, extractJson } from "./agent";
 import { createTasksBulk, type TaskWrite } from "./mutations";
@@ -118,4 +121,88 @@ async function createFromList(list: Assignment[]): Promise<ImportResult> {
     }
   }
   return out;
+}
+
+/* ---------------------------------------------------------------- 課題詳細 */
+
+export interface GakujoDetail {
+  course: string; // 例: AIシステムⅠ（ローマ数字揺れはNFKCで吸収）
+  title: string;
+  body: string; // 設問・課題説明の本文
+  due?: string | null; // YYYY-MM-DD
+  dueTime?: string | null; // HH:MM
+  grading?: string | null; // 評価方法
+  url?: string | null;
+}
+
+/**
+ * 課題詳細ページ（設問文）の取り込み: 授業フォルダに md として保存し
+ * （owui-sync が RAG「講義: X」へ登録 → チャット/タスクAI推定が設問を読める）、
+ * 対応するタスクがあれば notes に要点を書き込む（Google Tasks経由でスマホでも見える）。
+ * 同じ課題を再送すると md を上書き（冪等）。
+ */
+export async function importGakujoDetail(d: GakujoDetail): Promise<{
+  ok: boolean;
+  savedTo?: string;
+  taskUpdated?: boolean;
+  error?: string;
+}> {
+  const course = (d.course ?? "").trim();
+  const title = (d.title ?? "").trim();
+  const body = (d.body ?? "").trim();
+  if (!course || !title || body.length < 10) return { ok: false, error: "course/title/body が不足しています" };
+
+  // 1) 授業フォルダへ md 保存（RAG登録は owui-sync に任せる）
+  let savedTo: string | undefined;
+  const root = env.notesExportDir;
+  if (root) {
+    const { matchCourseDir } = await import("./notes-export");
+    const dirName = await matchCourseDir(root, course.normalize("NFKC"));
+    const dir = path.join(root, dirName);
+    await fs.mkdir(dir, { recursive: true });
+    const safe = title.replace(/[\\/:*?"<>|]/g, "_").slice(0, 60);
+    const md = [
+      `# 【課題】${title}`,
+      ``,
+      `- 講義: ${course}`,
+      d.due ? `- 締切: ${d.due}${d.dueTime ? ` ${d.dueTime}` : ""}` : "",
+      d.grading ? `- 評価方法: ${d.grading}` : "",
+      d.url ? `- 学情URL: ${d.url}` : "",
+      ``,
+      `## 課題内容（学情から取り込み）`,
+      ``,
+      body.slice(0, 50_000),
+    ].filter((l) => l !== "").join("\n");
+    savedTo = path.join(dir, `【課題】${safe}.md`);
+    await fs.writeFile(savedTo, md);
+    console.log(`[gakujo] 課題詳細を保存: ${savedTo}`);
+  }
+
+  // 2) 対応タスクの notes に要点を反映（タイトル包含で照合、NFKC揺れ吸収）
+  let taskUpdated = false;
+  const norm = (s: string) => s.normalize("NFKC");
+  const open = db
+    .select()
+    .from(tasks)
+    .where(and(isNull(tasks.deletedAt), eq(tasks.status, "needsAction")))
+    .all()
+    .filter((t) => norm(t.title ?? "").includes(norm(title)));
+  for (const t of open.slice(0, 2)) {
+    const head = body.slice(0, 1200);
+    if ((t.notes ?? "").includes(head.slice(0, 80))) continue; // 反映済み
+    try {
+      const { updateTask } = await import("./mutations");
+      await updateTask({
+        account: t.account,
+        tasklist: t.tasklist,
+        id: t.googleId,
+        notes: `${head}${body.length > 1200 ? "\n…（全文は授業資料フォルダの【課題】mdに保存済み）" : ""}`,
+      });
+      taskUpdated = true;
+      console.log(`[gakujo] タスクに設問を反映: ${t.title}`);
+    } catch (e) {
+      console.log(`[gakujo] タスク更新失敗: ${String(e).slice(0, 120)}`);
+    }
+  }
+  return { ok: true, savedTo, taskUpdated };
 }
