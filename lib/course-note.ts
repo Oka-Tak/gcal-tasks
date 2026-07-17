@@ -5,7 +5,7 @@ import { db } from "./db";
 import { notes } from "./db/schema";
 import { env } from "./env";
 import { runAgentAuto } from "./agent";
-import { bindNoteToFolder } from "./folder-notes";
+import { bindNoteToFolder, courseGeneralMaterials } from "./folder-notes";
 import { courseView } from "./course-sessions";
 import { glossaryBlock } from "./glossary";
 import { exportNoteFiles } from "./notes-export";
@@ -25,20 +25,30 @@ export function summaryTitleOf(course: string): string {
   return `${course}${TITLE_SUFFIX}`;
 }
 
-function buildPrompt(course: string, parts: { title: string; content: string }[], glossary: string): string {
+function buildPrompt(
+  course: string,
+  parts: { title: string; content: string }[],
+  general: { name: string; text: string }[],
+  glossary: string,
+): string {
   return [
-    `あなたは大学生の学習アシスタント。授業「${course}」の各回の講義ノート（要約）を渡すので、`,
+    `あなたは大学生の学習アシスタント。授業「${course}」の各回の講義ノート（要約）と、`,
+    "回に紐付かない全体資料（課題・過去問・小テスト・シラバス・配布資料など）を渡すので、",
     "期末テスト対策のための総まとめノートを日本語のMarkdownで作ってください。",
     "構成:",
     "1. 冒頭に「## この授業の全体像」— 何を学ぶ授業か、各回がどうつながるかを5行以内で。",
     "2. 「## 各回の要点」— 回ごとに見出し+要点2〜4行（試験に出そうな概念を優先）。",
     "3. 「## 重要用語集」— 横断的に重要な用語を1行ずつ（用語: 簡潔な定義）。",
-    "4. 「## 出題されそうなポイント・チェックリスト」— 教員が強調した点・課題やテスト言及・比較させられそうな概念対比を箇条書き。",
-    "5. あれば「## 未消化・要復習」— ノートから理解が薄そうな箇所。",
-    "捏造しない（ノートに無いことを試験範囲と断定しない）。テストや課題への言及は特に拾うこと。",
+    "4. 「## 出題されそうなポイント・チェックリスト」— 教員が強調した点・課題やテスト言及・比較させられそうな概念対比を箇条書き。全体資料に過去問・小テスト・課題があれば、その論点を最優先で拾い、可能なら模範解答の方針も添える。",
+    "5. 全体資料に課題や過去問がある場合は「## 課題・過去問の要点」節を作り、各設問の主旨と押さえるべき知識を整理する。",
+    "6. あれば「## 未消化・要復習」— ノートから理解が薄そうな箇所。",
+    "捏造しない（ノート・資料に無いことを試験範囲と断定しない）。テストや課題への言及は特に拾うこと。",
     "ツールは使わない。Markdown本文だけを出力（前置き・コードフェンス不要）。",
     ...(glossary ? ["", "# 用語集（ユーザー固有の用語）", glossary] : []),
     "",
+    ...(general.length
+      ? ["# 全体資料（課題・過去問・シラバス等 — 回に紐付かない）", ...general.map((g) => `## ${g.name}\n${g.text}`), ""]
+      : []),
     ...parts.map((p) => `# ${p.title}\n${p.content}`),
   ].join("\n");
 }
@@ -53,7 +63,10 @@ export async function generateCourseSummary(course: string): Promise<string> {
     if (!r || r.deletedAt || r.status !== "done" || !r.content?.trim()) continue;
     parts.push({ title: r.title ?? s.folder ?? s.ymd, content: r.content.trim().slice(0, 3500) });
   }
-  if (parts.length === 0) throw new Error("この授業にはまだ完成したノートがありません");
+  // 回に紐付かない全体資料（課題・過去問・シラバス等）も総まとめの材料にする
+  const general = await courseGeneralMaterials(course).catch(() => []);
+  if (parts.length === 0 && general.length === 0)
+    throw new Error("この授業にはまだ完成したノートも資料もありません");
 
   const notebook = `講義: ${course}`;
   const title = summaryTitleOf(course);
@@ -75,7 +88,7 @@ export async function generateCourseSummary(course: string): Promise<string> {
   // 生成はバックグラウンド（UIはノートを開いてポーリング）
   void (async () => {
     try {
-      const res = await runAgentAuto(buildPrompt(course, parts, glossaryBlock(1500)), {
+      const res = await runAgentAuto(buildPrompt(course, parts, general, glossaryBlock(1500)), {
         jobKind: "course-summary",
         timeoutMs: 600_000,
       });
@@ -93,7 +106,7 @@ export async function generateCourseSummary(course: string): Promise<string> {
         if (fid) db.update(notes).set({ owuiFileId: fid }).where(eq(notes.id, id)).run();
       });
       void exportNoteFiles(fresh, Date.now()).catch((e) => console.log(`[course-note] export failed: ${e}`));
-      console.log(`[course-note] 総まとめ生成: ${title}（${parts.length}回分）`);
+      console.log(`[course-note] 総まとめ生成: ${title}（${parts.length}回分 + 全体資料${general.length}件）`);
     } catch (e) {
       db.update(notes).set({ status: "error", error: String(e).slice(0, 500), updatedAt: Date.now() }).where(eq(notes.id, id)).run();
     }

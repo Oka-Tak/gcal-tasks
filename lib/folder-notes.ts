@@ -417,6 +417,34 @@ export async function folderMaterialsText(noteId: string): Promise<string | null
   return parts.length ? parts.join("\n\n") : null;
 }
 
+/**
+ * 授業フォルダ「直下」の general 資料（課題・過去問・シラバス・小テスト等、
+ * 回別サブフォルダに入らない全体資料）を抽出テキスト化する。総まとめノートが
+ * 各回ノートと合わせて参照する。Kairos自身の書き出し（総まとめmd・回別mdは
+ * サブフォルダ側）や owui-sync 済みは exportedPathsSync で除外される。
+ */
+export async function courseGeneralMaterials(course: string): Promise<{ name: string; text: string }[]> {
+  const root = env.notesExportDir;
+  if (!root) return [];
+  const abs = path.join(root, path.basename(course));
+  const cur = await collectFiles(abs, exportedPathsSync()); // 直下のみ（collectFilesは非再帰）
+  const out: { name: string; text: string }[] = [];
+  let total = 0;
+  for (const name of cur.materials.sort()) {
+    const ext = path.extname(name).toLowerCase();
+    const p = path.join(abs, name);
+    let text: string | null = null;
+    if (SELF_EXTRACT.has(ext)) text = await extractText(p);
+    else if (ext === ".md" || ext === ".txt") text = await fs.readFile(p, "utf8").catch(() => null);
+    else continue;
+    if (!text?.trim()) continue;
+    out.push({ name, text: text.trim().slice(0, 20_000) });
+    total += text.length;
+    if (total > 80_000) break;
+  }
+  return out;
+}
+
 /** Started once per server process from instrumentation.ts. */
 export function startFolderNotesLoop(): void {
   if (!env.notesExportDir) {
