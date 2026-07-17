@@ -445,6 +445,114 @@ export async function courseGeneralMaterials(course: string): Promise<{ name: st
   return out;
 }
 
+/** ディレクトリを再帰して全ファイルの絶対パスを列挙（隠しファイル除外）。 */
+async function* walk(dir: string): AsyncGenerator<string> {
+  let entries: fsSync.Dirent[];
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    if (e.name.startsWith(".")) continue;
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) yield* walk(p);
+    else if (e.isFile()) yield p;
+  }
+}
+
+const TEXT_DOC = new Set([".pdf", ".pptx", ".xlsx", ".csv", ".docx", ".doc", ".md", ".txt"]);
+const IMG_EXT = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp"]);
+const EXAM_HINT = /(過去問|試験|問題|再試|exam|quiz)/i;
+
+/** パス文字列から受験年度を推定（令和/平成/R/H/西暦）。ソート用の西暦も返す。 */
+function examYear(s: string): { label: string; num: number } | null {
+  let m = s.match(/令和\s*(\d{1,2})/); if (m) return { label: `令和${m[1]}`, num: 2018 + +m[1] };
+  m = s.match(/平成\s*(\d{1,2})/); if (m) return { label: `平成${m[1]}`, num: 1988 + +m[1] };
+  m = s.match(/\bR(\d{1,2})\b/); if (m) return { label: `R${m[1]}`, num: 2018 + +m[1] };
+  m = s.match(/\bH(\d{2})\b/); if (m) return { label: `H${m[1]}`, num: 1988 + +m[1] };
+  m = s.match(/(20[0-2]\d)/); if (m) return { label: m[1], num: +m[1] };
+  return null;
+}
+
+export interface CourseExtras {
+  general: { name: string; text: string }[]; // 過去問以外の全体資料（課題・シラバス等）
+  exams: { name: string; year: string; num: number; text: string }[]; // 過去問（年度降順）
+  examImages: number; // テキスト化できない画像の過去問枚数
+}
+
+/**
+ * 授業フォルダを再帰スキャンして「全体資料」と「過去問」に仕分ける。
+ * 回別サブフォルダ（<授業名>YYYYMMDD 等の日付フォルダ）は各回ノートで
+ * カバー済みなので除外。同名ファイルは重複コピー（過去問フォルダの入れ子）
+ * とみなし1つだけ採用。過去問=パスに過去問/試験/問題等を含むもの。
+ */
+export async function collectCourseExtras(course: string): Promise<CourseExtras> {
+  const root = env.notesExportDir;
+  const out: CourseExtras = { general: [], exams: [], examImages: 0 };
+  if (!root) return out;
+  const courseAbs = path.join(root, path.basename(course));
+  const exported = exportedPathsSync();
+  const seen = new Set<string>(); // basename重複除去
+  const contentSeen = new Set<string>(); // 内容重複除去（名前違い同一コピー対策）
+
+  let topDirs: fsSync.Dirent[];
+  try {
+    topDirs = await fs.readdir(courseAbs, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  // 回別日付フォルダを除外した探索対象（直下ファイル + 非日付サブフォルダの再帰）
+  const targets: string[] = [];
+  for (const e of topDirs) {
+    if (e.name.startsWith(".")) continue;
+    const p = path.join(courseAbs, e.name);
+    if (e.isFile()) targets.push(p);
+    else if (e.isDirectory() && !dateFromFolderName(e.name)) {
+      for await (const f of walk(p)) targets.push(f);
+    }
+  }
+
+  const examRaw: { name: string; year: string; num: number; text: string }[] = [];
+  const generalRaw: { name: string; text: string }[] = [];
+  for (const p of targets.sort()) {
+    if (exported.has(p)) continue;
+    const base = path.basename(p);
+    const ext = path.extname(base).toLowerCase();
+    const rel = path.relative(courseAbs, p);
+    const isExam = EXAM_HINT.test(rel);
+    if (IMG_EXT.has(ext)) { if (isExam) out.examImages++; continue; }
+    if (!TEXT_DOC.has(ext)) continue;
+    if (seen.has(base)) continue; // 入れ子コピーの重複除去
+    seen.add(base);
+    let text: string | null = null;
+    if (ext === ".md" || ext === ".txt") text = await fs.readFile(p, "utf8").catch(() => null);
+    else if (ext === ".doc") text = null; // 旧.docは抽出手段なし（.docx/.pdf版が並存することが多い）
+    else text = await extractText(p);
+    if (!text?.trim()) continue;
+    // 名前違いの同一コピー（2020.pdf / R2問題.pdf 等）は先頭ハッシュで弾く
+    const sig = crypto.createHash("sha1").update(text.trim().slice(0, 3000)).digest("hex");
+    if (contentSeen.has(sig)) continue;
+    contentSeen.add(sig);
+    if (isExam) {
+      const y = examYear(rel) ?? { label: "年度不明", num: 0 };
+      examRaw.push({ name: base, year: y.label, num: y.num, text: text.trim() });
+    } else {
+      generalRaw.push({ name: base, text: text.trim().slice(0, 20_000) });
+    }
+  }
+  examRaw.sort((a, b) => b.num - a.num || a.name.localeCompare(b.name)); // 新しい年度優先
+  out.exams = examRaw;
+  // general は合計80k字で打ち切り
+  let g = 0;
+  for (const item of generalRaw) {
+    out.general.push(item);
+    g += item.text.length;
+    if (g > 80_000) break;
+  }
+  return out;
+}
+
 /** Started once per server process from instrumentation.ts. */
 export function startFolderNotesLoop(): void {
   if (!env.notesExportDir) {
