@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Kairos 課題取り込み
 // @namespace    kairos
-// @version      1.3.0
-// @description  静大 学務システム: 課題一覧の一括取り込み + 課題詳細ページの設問文をKairosへ（AIが課題内容を理解できるようになる）
+// @version      1.4.0
+// @description  静大 学務システム: 課題一覧の一括取り込み + 課題詳細・小テスト/アンケートの設問（プルダウン選択肢含む）をKairosへ（AIが課題内容を理解できるようになる）
 // @match        https://gakujo.shizuoka.ac.jp/*
 // @run-at       document-idle
 // @grant        GM_xmlhttpRequest
@@ -99,6 +99,46 @@
     return { due: `${m[1]}-${p(m[2])}-${p(m[3])}`, dueTime: `${p(m[4])}:${p(m[5])}` };
   };
 
+  // 小テスト/アンケートの設問収集: 「第N問」ラベル（全角数字対応）を起点に、
+  // 後続のプルダウン(select)・ラジオ・チェック・自由記述(textarea)を対応付ける。
+  const collectQuestions = () => {
+    const questions = [];
+    let cur = null;
+    const push = () => { if (cur && (cur.text || cur.options.length)) questions.push(cur); };
+    for (const el of document.body.querySelectorAll("*")) {
+      const own = Array.from(el.childNodes).filter((n) => n.nodeType === 3)
+        .map((n) => n.textContent).join(" ").replace(/\s+/g, " ").trim().normalize("NFKC");
+      const m = own.match(/^第\s*(\d+)\s*問/);
+      if (m) { push(); cur = { no: +m[1], text: "", options: [], kind: "" }; continue; }
+      if (!cur) continue;
+      if (el.tagName === "SELECT") {
+        cur.kind = cur.kind || "プルダウン";
+        for (const o of el.options) { const t = o.textContent.trim(); if (t && !cur.options.includes(t)) cur.options.push(t); }
+      } else if (el.tagName === "TEXTAREA") {
+        cur.kind = cur.kind || "自由記述";
+      } else if (el.tagName === "INPUT" && (el.type === "radio" || el.type === "checkbox")) {
+        cur.kind = cur.kind || (el.type === "radio" ? "単一選択" : "複数選択");
+        const lbl = (el.closest("label")?.textContent || (el.id && document.querySelector(`label[for="${el.id}"]`)?.textContent) || "").trim();
+        if (lbl && !cur.options.includes(lbl)) cur.options.push(lbl);
+      } else if (
+        own.length > 3 && !/^(必須|任意)$/.test(own) &&
+        el.tagName !== "OPTION" && !el.closest("select") &&
+        !(el.closest("label") && el.closest("label").querySelector("input"))
+      ) {
+        cur.text = cur.text ? cur.text + "\n" + own : own;
+      }
+    }
+    push();
+    return questions;
+  };
+
+  const questionsToText = (qs) =>
+    qs.map((q) => [
+      `### 第${q.no}問${q.kind ? `（${q.kind}）` : ""}`,
+      q.text,
+      ...q.options.map((o) => `- ${o}`),
+    ].filter(Boolean).join("\n")).join("\n\n");
+
   const collectDetail = () => {
     const title = document.querySelector(".question-heading-contents h2.c-heading")?.textContent?.trim();
     if (!title) return null;
@@ -116,10 +156,13 @@
     }
     const { due, dueTime } = parseJpDeadline(document.querySelector(".deadline_box .date")?.textContent);
     // 設問本文: .c-contents-body 内の .text（複数あることがある）
-    const body = Array.from(document.querySelectorAll(".c-contents-body .text, .c-contents-body p.text"))
+    const desc = Array.from(document.querySelectorAll(".c-contents-body .text, .c-contents-body p.text"))
       .map((p) => p.innerText.trim())
       .filter((t) => t && !/^(受付中|受付終了|締め切り)/.test(t))
       .join("\n\n");
+    // 小テスト/アンケートなら設問+選択肢も収集
+    const qs = collectQuestions();
+    const body = [desc, qs.length ? `## 設問\n\n${questionsToText(qs)}` : ""].filter(Boolean).join("\n\n");
     if (!body || body.length < 10) return null;
     return { course, title, body, due, dueTime, grading, url: location.href.split("?")[0] };
   };
@@ -157,7 +200,7 @@
     // 詳細ページ（課題・アンケート提出）
     if (!document.getElementById("kairos-detail-btn")) {
       const heading = document.querySelector(".question-heading-contents h2.c-heading");
-      const bodyEl = document.querySelector(".c-contents-body");
+      const bodyEl = document.querySelector(".c-contents-body") || document.querySelector("form select, form textarea, form input[type=radio]")?.closest("form") || null;
       if (heading && bodyEl) {
         const btn = document.createElement("button");
         btn.id = "kairos-detail-btn";
