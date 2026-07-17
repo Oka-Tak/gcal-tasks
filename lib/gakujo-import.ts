@@ -98,9 +98,22 @@ async function createFromList(list: Assignment[]): Promise<ImportResult> {
     if (a.due < today) { out.pastOrDone++; out.items.push({ title, due: a.due, status: "past-or-done" }); continue; }
 
     const key = keyOf(a);
-    const dup = db.select({ id: tasks.googleId }).from(tasks)
-      .where(and(isNull(tasks.deletedAt), like(tasks.notes, `%[gakujo:${key}]%`))).get();
-    if (dup) { out.skipped++; out.items.push({ title, due: a.due, status: "skipped" }); continue; }
+    // 重複判定: gakujoマーカー一致 or 同一正規化タイトルの未完了タスクが既にある。
+    // 詳細取り込み(📚)やAI推定で先にタスクができている課題を二重作成しない。
+    const norm = (s: string | null | undefined) => (s ?? "").normalize("NFKC").replace(/\s+/g, "").toLowerCase();
+    const titleN = norm(title);
+    const dup = db.select({ id: tasks.googleId, notes: tasks.notes, title: tasks.title })
+      .from(tasks)
+      .where(and(isNull(tasks.deletedAt), eq(tasks.status, "needsAction")))
+      .all()
+      .find((t) => (t.notes ?? "").includes(`[gakujo:${key}]`) || norm(t.title) === titleN);
+    if (dup) {
+      // マーカーが無い既存タスク（手動・詳細取り込み由来）には付けておく＝次回も安定
+      if (!(dup.notes ?? "").includes(`[gakujo:${key}]`)) {
+        db.update(tasks).set({ notes: `${dup.notes ?? ""}\n[gakujo:${key}]`.trim() }).where(eq(tasks.googleId, dup.id)).run();
+      }
+      out.skipped++; out.items.push({ title, due: a.due, status: "skipped" }); continue;
+    }
 
     toCreate.push({
       account: target.account,

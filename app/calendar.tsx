@@ -525,6 +525,7 @@ export default function Calendar() {
         <TasksRail
           lists={lists} tasks={tasks} multi={accounts.length > 1} acctColor={acctColor}
           onToggle={toggleDone} onOpen={openTask} onAdd={quickAddTask} onAddDetail={openNewTask}
+          onChanged={() => void reloadTasks()}
         />
       </div>
       </div>
@@ -756,9 +757,9 @@ function MonthView(props: {
 function TasksRail(props: {
   lists: ListMeta[]; tasks: Task[]; multi: boolean; acctColor: (e: string) => string;
   onToggle: (t: Task) => void; onOpen: (t: Task) => void; onAdd: (l: ListMeta, title: string) => void;
-  onAddDetail: (l: ListMeta, title: string) => void;
+  onAddDetail: (l: ListMeta, title: string) => void; onChanged: () => void;
 }) {
-  const { lists, tasks, multi, acctColor, onToggle, onOpen, onAdd, onAddDetail } = props;
+  const { lists, tasks, multi, acctColor, onToggle, onOpen, onAdd, onAddDetail, onChanged } = props;
   const now = startOfDay(new Date());
   // 既定は締切順（明示的に手動へ切り替えた場合だけ従う）
   const [byDue, setByDue] = useState(true);
@@ -767,17 +768,33 @@ function TasksRail(props: {
     if (localStorage.getItem("kairos-task-sort") === "manual") setByDue(false);
   }, []);
   const toggle = () => setByDue((v) => { localStorage.setItem("kairos-task-sort", v ? "manual" : "due"); return !v; });
+
+  // 重複タスク（同一タイトル）の検出とマージ
+  const [dups, setDups] = useState<DupGroup[]>([]);
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const reloadDups = useCallback(() => {
+    api("GET", "/api/tasks/merge").then((r) => setDups(r.groups || [])).catch(() => {});
+  }, []);
+  useEffect(() => { reloadDups(); }, [reloadDups, tasks]);
+
   return (
     <div className="rail">
       <PlanCard refreshKey={tasks} />
       <div className="railhead">
         <h2>タスク</h2>
         <div className="spacer" />
+        {dups.length > 0 && (
+          <button className="sortbtn" style={{ color: "var(--danger)" }} onClick={() => setMergeOpen(true)}
+            title="同じタイトルのタスクが重複しています。クリックで統合">
+            🔀 重複{dups.reduce((s, g) => s + g.tasks.length - 1, 0)}件
+          </button>
+        )}
         <button className={`sortbtn${byDue ? " on" : ""}`} onClick={toggle}
           title={byDue ? "締切順で表示中（クリックで手動並びに戻す）" : "締切順に並べ替え"}>
           {byDue ? "⏰ 締切順" : "↕ 並べ替え"}
         </button>
       </div>
+      {mergeOpen && <MergeModal groups={dups} onClose={() => setMergeOpen(false)} onMerged={() => { reloadDups(); onChanged(); }} />}
       {lists.map((l) => (
         <TList
           key={`${l.account}|${l.id}`}
@@ -788,6 +805,69 @@ function TasksRail(props: {
         />
       ))}
     </div>
+  );
+}
+
+/* --------------------------------------------------------- duplicate merge */
+type DupTask = { key: string; title: string; due: string | null; subCount: number; hasNotes: boolean; est: number | null; suggestedKeep: boolean };
+type DupGroup = { key: string; title: string; tasks: DupTask[] };
+
+/** 重複タスクの統合UI: 各グループで「残す1件」を選び、他をマージ（サブタスク・メモを引き継ぐ）。 */
+function MergeModal({ groups, onClose, onMerged }: { groups: DupGroup[]; onClose: () => void; onMerged: () => void }) {
+  const [keep, setKeep] = useState<Record<string, string>>(() =>
+    Object.fromEntries(groups.map((g) => [g.key, g.tasks.find((t) => t.suggestedKeep)?.key ?? g.tasks[0].key])),
+  );
+  const [busy, setBusy] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const merge = async (g: DupGroup) => {
+    const keepKey = keep[g.key];
+    const drop = g.tasks.filter((t) => t.key !== keepKey).map((t) => t.key);
+    setBusy(g.key);
+    setMsg(null);
+    try {
+      const r = await api("POST", "/api/tasks/merge", { keep: keepKey, drop });
+      setMsg(`統合しました（${r.merged}件をまとめ、サブタスク${r.movedSubtasks}件を移動）`);
+      onMerged();
+    } catch (e) {
+      setMsg(String((e as Error).message ?? e).slice(0, 200));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <Scrim onClose={onClose}>
+      <h3>🔀 重複タスクの統合</h3>
+      <p className="hint" style={{ marginTop: 0 }}>
+        同じタイトルのタスクが複数あります。残す1件を選ぶと、他のサブタスク・メモ・見積り・締切を引き継いで統合します。
+      </p>
+      {groups.length === 0 && <p className="hint">重複はありません。</p>}
+      {groups.map((g) => (
+        <div key={g.key} className="card" style={{ margin: "8px 0" }}>
+          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>{g.title}</div>
+          {g.tasks.map((t) => (
+            <label key={t.key} className="acct-row" style={{ cursor: "pointer", gap: 8 }}>
+              <input type="radio" name={`keep-${g.key}`} checked={keep[g.key] === t.key}
+                onChange={() => setKeep((k) => ({ ...k, [g.key]: t.key }))} />
+              <span className="em" style={{ fontSize: 12.5 }}>
+                残す{t.subCount > 0 ? ` ・ サブ${t.subCount}` : ""}{t.est ? ` ・ ${t.est}分` : ""}{t.hasNotes ? " ・ メモ有" : ""}{t.due ? ` ・ 〆${t.due.slice(5)}` : ""}
+              </span>
+            </label>
+          ))}
+          <div style={{ marginTop: 6 }}>
+            <button className="btn btn-primary" disabled={busy != null} onClick={() => void merge(g)}>
+              {busy === g.key ? "統合中…" : `この${g.tasks.length}件を統合`}
+            </button>
+          </div>
+        </div>
+      ))}
+      {msg && <p className="hint" style={{ margin: "4px 0 0" }}>{msg}</p>}
+      <div className="modal-foot" style={{ marginTop: 12 }}>
+        <div className="spacer" />
+        <button className="btn btn-primary" onClick={onClose}>閉じる</button>
+      </div>
+    </Scrim>
   );
 }
 
