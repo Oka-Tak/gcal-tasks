@@ -42,6 +42,9 @@ async function api(method: string, url: string, body?: unknown) {
 }
 
 export default function MoneyClient() {
+  // React Compilerのオプトアウト: 手動useCallback（load等）のdepsからstate setterを
+  // 省く従来スタイルを維持する。この画面は軽く自動メモ化の恩恵は不要。
+  "use no memo";
   const now = new Date();
   const [ym, setYm] = useState<{ y: number; m: number }>({ y: now.getFullYear(), m: now.getMonth() + 1 });
   const [items, setItems] = useState<Expense[]>([]);
@@ -66,7 +69,7 @@ export default function MoneyClient() {
     } catch (e) {
       setErr(String(e));
     }
-  }, [ym]);
+  }, [ym, setItems, setSummary, setErr]);
 
   useEffect(() => {
     // fetch-then-set — false positive for this rule.
@@ -91,25 +94,33 @@ export default function MoneyClient() {
     }
   }
 
-  const upload = useCallback(async (f: File) => {
+  const upload = useCallback(async (files: File[]) => {
+    if (files.length === 0) return;
     setUploading(true);
     setErr(null);
     try {
-      const fd = new FormData();
-      fd.append("file", f);
-      const r = await fetch("/api/money", { method: "POST", body: fd });
-      const d = await r.json().catch(() => null);
-      if (!r.ok) throw new Error(d?.detail ?? `HTTP ${r.status}`);
-      // 明細ファイルはドラフトを返す → プレビューモーダルで確認して一括登録
-      if (d?.preview && Array.isArray(d.drafts)) setDrafts(d.drafts as Draft[]);
-      else await load();
+      // 複数ファイルを並列処理。明細ファイルはドラフトを集約→まとめてプレビュー、
+      // 画像（レシート）はサーバ側で即登録される。
+      const results = await Promise.all(files.map(async (f) => {
+        const fd = new FormData();
+        fd.append("file", f);
+        const r = await fetch("/api/money", { method: "POST", body: fd });
+        const d = (await r.json().catch(() => null)) as { detail?: string; preview?: boolean; drafts?: Draft[]; created?: unknown[] } | null;
+        return { name: f.name, ok: r.ok, status: r.status, d };
+      }));
+      const errors = results.filter((x) => !x.ok).map((x) => `${x.name}: ${x.d?.detail ?? `HTTP ${x.status}`}`);
+      const allDrafts = results.flatMap((x) => (x.ok && x.d?.preview && Array.isArray(x.d.drafts) ? x.d.drafts : []));
+      const imageRegistered = results.reduce((s, x) => s + (x.ok && Array.isArray(x.d?.created) ? (x.d?.created?.length ?? 0) : 0), 0);
+      if (errors.length) setErr(errors.join(" / ").slice(0, 300));
+      if (allDrafts.length) setDrafts(allDrafts);
+      else if (imageRegistered) await load();
     } catch (e) {
       setErr(`取込: ${String(e).slice(0, 200)}`);
     } finally {
       setUploading(false);
       if (fileRef.current) fileRef.current.value = "";
     }
-  }, [load]);
+  }, [load, setUploading, setErr, setDrafts]);
 
   const del = useCallback(async (id: string) => {
     if (!confirm("この支出を削除しますか？")) return;
@@ -196,10 +207,10 @@ export default function MoneyClient() {
                   {uploading ? "読み取り中…" : "📷 レシート/スクショ・明細ファイル"}
                 </button>
                 <input
-                  ref={fileRef} type="file"
+                  ref={fileRef} type="file" multiple
                   accept="image/*,.csv,.tsv,.txt,.pdf,.xlsx,.xls"
                   hidden
-                  onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); }}
+                  onChange={(e) => { const fs = Array.from(e.target.files ?? []); if (fs.length) void upload(fs); }}
                 />
               </div>
               <p className="hint" style={{ marginTop: 6 }}>
@@ -235,7 +246,12 @@ export default function MoneyClient() {
         <ImportPreview
           drafts={drafts}
           onClose={() => setDrafts(null)}
-          onDone={async () => { setDrafts(null); await load(); }}
+          onDone={async (jumpY, jumpM) => {
+            setDrafts(null);
+            // 取り込んだ明細の月へ自動で表示を移す（別月なら ym 変更で自動再読込）
+            if (jumpY && jumpM && (jumpY !== ym.y || jumpM !== ym.m)) setYm({ y: jumpY, m: jumpM });
+            else await load();
+          }}
           onError={setErr}
         />
       )}
@@ -245,13 +261,20 @@ export default function MoneyClient() {
 
 /** 明細ファイルから抽出した支出の確認モーダル。行の除外・カテゴリ修正→一括登録。 */
 function ImportPreview({ drafts, onClose, onDone, onError }: {
-  drafts: Draft[]; onClose: () => void; onDone: () => void; onError: (m: string) => void;
+  drafts: Draft[]; onClose: () => void; onDone: (jumpY?: number, jumpM?: number) => void; onError: (m: string) => void;
 }) {
   const [rows, setRows] = useState(() => drafts.map((d) => ({ ...d, keep: true })));
   const [busy, setBusy] = useState(false);
   const keepRows = rows.filter((r) => r.keep);
   const total = keepRows.reduce((s, r) => s + r.amountYen, 0);
   const fmtDay = (ms: number | null) => (ms ? new Date(ms).toISOString().slice(0, 10) : "日付不明");
+  // 明細がまたぐ月の内訳（プレビュー見出し用）
+  const monthsOf = (list: { whenMs: number | null }[]) => {
+    const cnt = new Map<string, number>();
+    for (const r of list) { const d = r.whenMs ? new Date(r.whenMs) : new Date(); cnt.set(`${d.getFullYear()}/${d.getMonth() + 1}`, (cnt.get(`${d.getFullYear()}/${d.getMonth() + 1}`) ?? 0) + 1); }
+    return [...cnt.entries()].sort((a, b) => b[1] - a[1]);
+  };
+  const monthBreakdown = monthsOf(keepRows);
 
   const commit = async () => {
     setBusy(true);
@@ -261,10 +284,16 @@ function ImportPreview({ drafts, onClose, onDone, onError }: {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ drafts: keepRows.map(({ keep: _keep, ...d }) => d) }),
       });
-      const d = await r.json().catch(() => null);
+      const d = (await r.json().catch(() => null)) as { detail?: string; created?: { whenMs?: number }[]; skipped?: number } | null;
       if (!r.ok) throw new Error(d?.detail ?? `HTTP ${r.status}`);
-      onError(d.skipped > 0 ? `${d.created.length}件を登録（同額・同日の${d.skipped}件は重複としてスキップ）` : `${d.created.length}件を登録しました`);
-      onDone();
+      const created = d?.created ?? [];
+      // 登録された明細のうち最も件数の多い月へ飛ぶ
+      const mb = monthsOf(created.map((c) => ({ whenMs: c.whenMs ?? null })));
+      const [jy, jm] = mb.length ? mb[0][0].split("/").map(Number) : [undefined, undefined];
+      onError((d?.skipped ?? 0) > 0
+        ? `${created.length}件を登録（同額・同日の${d!.skipped}件は重複スキップ）${jy ? ` — ${jy}/${jm} を表示` : ""}`
+        : `${created.length}件を登録しました${jy ? ` — ${jy}/${jm} を表示` : ""}`);
+      onDone(jy, jm);
     } catch (e) {
       onError(`一括登録: ${String(e).slice(0, 200)}`);
     } finally {
@@ -277,7 +306,9 @@ function ImportPreview({ drafts, onClose, onDone, onError }: {
       <div className="modal" style={{ maxWidth: 640, width: "92vw" }}>
         <h3 style={{ marginTop: 0 }}>明細から支出を取込</h3>
         <p className="hint">
-          {keepRows.length}件 / 計 {yen(total)}。要らない行はチェックを外してください。既存と同額・同日の行は登録時に自動スキップされます。
+          {keepRows.length}件 / 計 {yen(total)}
+          {monthBreakdown.length > 0 && <>（{monthBreakdown.map(([m, c]) => `${m} ${c}件`).join("・")}）</>}
+          。要らない行はチェックを外してください。既存と同額・同日の行は登録時に自動スキップされます。登録後は明細の月に自動で表示が移ります。
         </p>
         <div style={{ maxHeight: "56vh", overflowY: "auto", margin: "8px 0" }}>
           {rows.map((r, i) => (
