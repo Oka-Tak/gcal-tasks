@@ -95,6 +95,10 @@ export function dateFromFolderName(name: string): number | null {
  */
 export function sessionNoFromFiles(files: string[]): number | null {
   for (const f of files) {
+    // Kairos自身の書き出し（「YYYY-MM-DD …」要約md・「…（全文文字起こし）.txt」）は
+    // 一次情報にしない。これを読むと自分が付けた回番号を根拠にしてしまい、教員資料と
+    // 実際の回番号がズレても永遠に検出できなくなる（数学の世界で発覚した自己参照）。
+    if (/^\d{4}-\d{2}-\d{2}[ 　]/.test(f) || f.includes("全文文字起こし")) continue;
     const m = f.match(/第\s*0*(\d{1,2})\s*[回講]/);
     if (m) return +m[1];
   }
