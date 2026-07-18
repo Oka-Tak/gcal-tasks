@@ -8,6 +8,7 @@ import {
   createExpense, deleteExpense, EXPENSE_FILE_EXT, extractExpenseFromImage, extractExpensesFromFile,
   listExpenses, monthSummary, updateExpense,
 } from "@/lib/money";
+import { ensureMonthMaterialized, listSubscriptions, subsMonthlyTotal } from "@/lib/subscriptions";
 import { saveUploadImage } from "@/lib/logs";
 import { InputError } from "@/lib/write-validation";
 import { isExpenseCategory } from "@/lib/money-shared";
@@ -34,11 +35,15 @@ export async function GET(req: NextRequest) {
     return Response.json({ detail: "year/month が不正です" }, { status: 400 });
   }
   const month0 = month - 1;
+  // この月ぶんのサブスクを先に自動計上（未生成のものだけ・冪等）。
+  try { ensureMonthMaterialized(year, month0); } catch { /* サブスク未整備でも支出表示は続行 */ }
   const start = new Date(year, month0, 1).getTime();
   const end = new Date(year, month0 + 1, 1).getTime();
   return Response.json({
     expenses: listExpenses(start, end),
     summary: monthSummary(year, month0),
+    subscriptions: listSubscriptions(),
+    subsMonthlyTotal: subsMonthlyTotal(),
   });
 }
 

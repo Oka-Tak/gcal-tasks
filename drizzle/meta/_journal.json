@@ -99,6 +99,13 @@
       "when": 1783998540632,
       "tag": "0013_dry_white_tiger",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1784407833162,
+      "tag": "0014_solid_deathbird",
+      "breakpoints": true
     }
   ]
 }

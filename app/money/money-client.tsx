@@ -14,6 +14,19 @@ type Expense = {
   note: string | null;
   whenMs: number;
   source: string | null;
+  kind?: string;
+  subscriptionId?: string | null;
+};
+
+type Subscription = {
+  id: string;
+  name: string;
+  amountYen: number;
+  category: string;
+  billingDay: number;
+  note: string | null;
+  active: boolean;
+  startMs: number;
 };
 
 type Summary = {
@@ -49,6 +62,8 @@ export default function MoneyClient() {
   const [ym, setYm] = useState<{ y: number; m: number }>({ y: now.getFullYear(), m: now.getMonth() + 1 });
   const [items, setItems] = useState<Expense[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [subs, setSubs] = useState<Subscription[]>([]);
+  const [subsTotal, setSubsTotal] = useState(0);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -66,10 +81,12 @@ export default function MoneyClient() {
       const r = await api("GET", `/api/money?year=${ym.y}&month=${ym.m}`);
       setItems(r.expenses || []);
       setSummary(r.summary || null);
+      setSubs(r.subscriptions || []);
+      setSubsTotal(r.subsMonthlyTotal || 0);
     } catch (e) {
       setErr(String(e));
     }
-  }, [ym, setItems, setSummary, setErr]);
+  }, [ym, setItems, setSummary, setSubs, setSubsTotal, setErr]);
 
   useEffect(() => {
     // fetch-then-set — false positive for this rule.
@@ -220,6 +237,9 @@ export default function MoneyClient() {
               </p>
             </div>
 
+            {/* サブスク（定期課金）— 登録すれば毎月自動で計上され、都度入力が不要 */}
+            <SubscriptionSection subs={subs} total={subsTotal} onChanged={load} onError={setErr} />
+
             {/* 一覧 */}
             {groups.length === 0 && <p className="hint">この月の記録はまだありません。</p>}
             {groups.map((g) => (
@@ -318,6 +338,9 @@ function Row({ e, onChanged, onDelete, onError }: {
     >
       <span style={{ minWidth: 84, fontWeight: 600, textAlign: "right" }}>{yen(e.amountYen)}</span>
       <span className="hint">{CATEGORY_LABEL[e.category] ?? e.category}</span>
+      {e.kind === "sub" && (
+        <span className="hint" style={{ fontSize: 10, border: "1px solid var(--border)", borderRadius: 999, padding: "1px 6px" }}>🔁 サブスク</span>
+      )}
       <span style={{ flex: 1, minWidth: 0 }}>
         <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>
           {e.title ?? ""}{srcMark}{e.note ? " 📝" : ""}
@@ -329,6 +352,98 @@ function Row({ e, onChanged, onDelete, onError }: {
         )}
       </span>
       <span className="hint">{pad(new Date(e.whenMs).getHours())}:{pad(new Date(e.whenMs).getMinutes())}</span>
+    </div>
+  );
+}
+
+/**
+ * サブスク（定期課金）の管理。ここに登録すると毎月自動で支出に計上され、
+ * 都度入力が要らなくなる。稼働/停止のトグル・金額や課金日の編集ができる。
+ */
+function SubscriptionSection({ subs, total, onChanged, onError }: {
+  subs: Subscription[]; total: number; onChanged: () => Promise<void>; onError: (m: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState("");
+  const [amount, setAmount] = useState("");
+  const [category, setCategory] = useState("sub");
+  const [billingDay, setBillingDay] = useState("1");
+  const [busy, setBusy] = useState(false);
+  const active = subs.filter((s) => s.active);
+
+  const add = async () => {
+    const n = Number(amount);
+    if (!name.trim() || !Number.isFinite(n) || n <= 0 || busy) return;
+    setBusy(true);
+    try {
+      await api("POST", "/api/subscriptions", {
+        name: name.trim(), amountYen: n, category, billingDay: Number(billingDay) || 1,
+      });
+      setName(""); setAmount(""); setCategory("sub"); setBillingDay("1"); setAdding(false);
+      await onChanged();
+    } catch (e) {
+      onError(`サブスク登録: ${String(e).slice(0, 200)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const patch = async (id: string, body: Record<string, unknown>) => {
+    try { await api("PATCH", "/api/subscriptions", { id, ...body }); await onChanged(); }
+    catch (e) { onError(`サブスク更新: ${String(e).slice(0, 200)}`); }
+  };
+  const remove = async (id: string, nm: string) => {
+    if (!confirm(`「${nm}」を停止しますか？（過去の計上分は残ります）`)) return;
+    try { await api("DELETE", `/api/subscriptions?id=${encodeURIComponent(id)}`); await onChanged(); }
+    catch (e) { onError(`サブスク停止: ${String(e).slice(0, 200)}`); }
+  };
+
+  return (
+    <div className="card" style={{ marginTop: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }} onClick={() => setOpen((o) => !o)}>
+        <span style={{ fontWeight: 600 }}>🔁 サブスク</span>
+        <span className="hint">{active.length}件・月額 {yen(total)}</span>
+        <div style={{ flex: 1 }} />
+        <span className="hint">{open ? "▲" : "▼"}</span>
+      </div>
+
+      {open && (
+        <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+          {subs.length === 0 && <p className="hint">まだサブスクがありません。登録すると毎月自動で計上されます。</p>}
+          {subs.map((s) => (
+            <div key={s.id} className="card" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", opacity: s.active ? 1 : 0.5 }}>
+              <span style={{ minWidth: 78, fontWeight: 600, textAlign: "right" }}>{yen(s.amountYen)}</span>
+              <span className="hint">{CATEGORY_LABEL[s.category] ?? s.category}</span>
+              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {s.name} <span className="hint">毎月{s.billingDay}日</span>{!s.active && <span className="hint">（停止中）</span>}
+              </span>
+              <button className="btn" onClick={() => void patch(s.id, { active: !s.active })} title={s.active ? "停止" : "再開"}>
+                {s.active ? "⏸" : "▶"}
+              </button>
+              <button className="btn" onClick={() => void remove(s.id, s.name)} title="削除">✕</button>
+            </div>
+          ))}
+
+          {adding ? (
+            <div className="card" style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", padding: "8px 10px" }}>
+              <input placeholder="サービス名" value={name} onChange={(e) => setName(e.target.value)} style={{ flex: 1, minWidth: 120 }} />
+              <input type="number" inputMode="numeric" placeholder="月額" value={amount} onChange={(e) => setAmount(e.target.value)} style={{ width: 90 }} />
+              <select value={category} onChange={(e) => setCategory(e.target.value)}>
+                {CATS.map((c) => <option key={c} value={c}>{CATEGORY_LABEL[c]}</option>)}
+              </select>
+              <label className="hint" style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                毎月<input type="number" inputMode="numeric" min={1} max={28} value={billingDay} onChange={(e) => setBillingDay(e.target.value)} style={{ width: 48 }} />日
+              </label>
+              <button className="btn btn-primary" onClick={() => void add()} disabled={busy}>{busy ? "…" : "登録"}</button>
+              <button className="btn" onClick={() => setAdding(false)} disabled={busy}>やめる</button>
+            </div>
+          ) : (
+            <button className="btn" onClick={() => setAdding(true)} style={{ alignSelf: "flex-start" }}>＋ サブスクを追加</button>
+          )}
+          <p className="hint">課金日は1〜28日（月末揺れ回避）。登録・稼働中のサブスクは、その月を開くと自動で支出に計上されます。</p>
+        </div>
+      )}
     </div>
   );
 }

@@ -346,11 +346,36 @@ export const expenses = sqliteTable(
     title: text("title"), // 店名や品目 例 "セブン 昼食"
     note: text("note"),
     whenMs: integer("when_ms").notNull(), // 支払い日時 (epoch ms)
-    source: text("source"), // manual | screenshot | agent
+    source: text("source"), // manual | screenshot | agent | sub
+    kind: text("kind").default("spot"), // spot（都度）| sub（サブスクから自動計上）
+    subscriptionId: text("subscription_id"), // kind=sub のとき、生成元サブスク
     imagePath: text("image_path"),
     createdAt: integer("created_at"),
     updatedAt: integer("updated_at"),
     deletedAt: integer("deleted_at"),
   },
   (t) => [index("expenses_when").on(t.whenMs)],
+);
+
+/**
+ * サブスク（定期課金）のマスター。都度の支出とは別建て。月表示のたびに
+ * lib/subscriptions.ts がその月ぶんを expenses に冪等生成する（kind=sub）ので、
+ * 毎月の手入力が不要になる。金額変更は以後の生成に効き、過去分は実際の請求額として残す。
+ */
+export const subscriptions = sqliteTable(
+  "subscriptions",
+  {
+    id: text("id").primaryKey(), // uuid
+    name: text("name").notNull(), // サービス名 例 "Netflix"
+    amountYen: integer("amount_yen").notNull(), // 月額
+    category: text("category").notNull().default("sub"), // 表示上の属性（sub / funsub 等）
+    billingDay: integer("billing_day").notNull().default(1), // 課金日 1-28（月末揺れ回避で28上限）
+    note: text("note"),
+    active: integer("active").notNull().default(1), // 1=稼働中 / 0=停止（以後は計上しない）
+    startMs: integer("start_ms").notNull(), // この月から計上を始める
+    createdAt: integer("created_at"),
+    updatedAt: integer("updated_at"),
+    deletedAt: integer("deleted_at"),
+  },
+  (t) => [index("subscriptions_active").on(t.active)],
 );

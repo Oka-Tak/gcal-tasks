@@ -27,6 +27,8 @@ export interface ExpenseView {
   note: string | null;
   whenMs: number;
   source: string | null;
+  kind: string; // spot（都度）| sub（サブスク自動計上）
+  subscriptionId: string | null;
   createdAt: number | null;
 }
 
@@ -39,6 +41,8 @@ const view = (r: Row): ExpenseView => ({
   note: r.note,
   whenMs: r.whenMs,
   source: r.source,
+  kind: r.kind ?? "spot",
+  subscriptionId: r.subscriptionId ?? null,
   createdAt: r.createdAt,
 });
 
@@ -49,6 +53,8 @@ export function createExpense(e: {
   note?: string | null;
   whenMs?: number | null;
   source?: string | null;
+  kind?: string | null;
+  subscriptionId?: string | null;
   imagePath?: string | null;
 }): ExpenseView {
   if (!Number.isFinite(e.amountYen) || e.amountYen === 0 || Math.abs(e.amountYen) > 10_000_000) {
@@ -65,6 +71,8 @@ export function createExpense(e: {
     note: e.note?.slice(0, 2000) ?? null,
     whenMs: e.whenMs ?? now,
     source: e.source ?? "manual",
+    kind: e.kind ?? "spot",
+    subscriptionId: e.subscriptionId ?? null,
     imagePath: e.imagePath ?? null,
     createdAt: now,
     updatedAt: now,
