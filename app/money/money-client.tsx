@@ -28,6 +28,8 @@ const pad = (n: number) => String(n).padStart(2, "0");
 const yen = (n: number) => `¥${n.toLocaleString()}`;
 const CATS = Object.keys(CATEGORY_LABEL);
 
+type Draft = { amountYen: number; category: string; title: string | null; note: string | null; whenMs: number | null };
+
 async function api(method: string, url: string, body?: unknown) {
   const r = await fetch(url, {
     method,
@@ -53,6 +55,8 @@ export default function MoneyClient() {
   const [title, setTitle] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
+  // 明細ファイル取込のドラフト（プレビュー確認用）
+  const [drafts, setDrafts] = useState<Draft[] | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -94,10 +98,13 @@ export default function MoneyClient() {
       const fd = new FormData();
       fd.append("file", f);
       const r = await fetch("/api/money", { method: "POST", body: fd });
-      if (!r.ok) throw new Error((await r.json().catch(() => null))?.detail ?? `HTTP ${r.status}`);
-      await load();
+      const d = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(d?.detail ?? `HTTP ${r.status}`);
+      // 明細ファイルはドラフトを返す → プレビューモーダルで確認して一括登録
+      if (d?.preview && Array.isArray(d.drafts)) setDrafts(d.drafts as Draft[]);
+      else await load();
     } catch (e) {
-      setErr(`スクショ取込: ${String(e).slice(0, 200)}`);
+      setErr(`取込: ${String(e).slice(0, 200)}`);
     } finally {
       setUploading(false);
       if (fileRef.current) fileRef.current.value = "";
@@ -186,15 +193,19 @@ export default function MoneyClient() {
                 />
                 <button className="btn btn-primary" onClick={() => void add()} disabled={busy}>追加</button>
                 <button className="btn" onClick={() => fileRef.current?.click()} disabled={uploading}>
-                  {uploading ? "読み取り中…" : "📷 レシート/スクショ"}
+                  {uploading ? "読み取り中…" : "📷 レシート/スクショ・明細ファイル"}
                 </button>
                 <input
-                  ref={fileRef} type="file" accept="image/*" hidden
+                  ref={fileRef} type="file"
+                  accept="image/*,.csv,.tsv,.txt,.pdf,.xlsx,.xls"
+                  hidden
                   onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); }}
                 />
               </div>
               <p className="hint" style={{ marginTop: 6 }}>
-                レシート・PayPay等の画面を撮って投げると自動で読み取ります。チャットで「昼飯800円」と言っても記録できます。
+                レシート・PayPay等の画面を撮って投げると自動で読み取り。銀行・クレカ・家計簿の
+                明細ファイル（CSV / PDF / Excel）は支出だけを抽出して一覧で確認→一括登録できます。
+                チャットで「昼飯800円」と言っても記録できます。
               </p>
             </div>
 
@@ -209,7 +220,7 @@ export default function MoneyClient() {
                   <div key={e.id} className="card" style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", marginBottom: 6 }}>
                     <span style={{ minWidth: 84, fontWeight: 600, textAlign: "right" }}>{yen(e.amountYen)}</span>
                     <span className="hint">{CATEGORY_LABEL[e.category] ?? e.category}</span>
-                    <span style={{ flex: 1 }}>{e.title ?? ""}{e.source === "screenshot" ? " 📷" : e.source === "agent" ? " 🤖" : ""}</span>
+                    <span style={{ flex: 1 }}>{e.title ?? ""}{e.source === "screenshot" ? " 📷" : e.source === "import" ? " 📄" : e.source === "agent" ? " 🤖" : ""}</span>
                     <span className="hint">{pad(new Date(e.whenMs).getHours())}:{pad(new Date(e.whenMs).getMinutes())}</span>
                     <button className="btn" onClick={() => void del(e.id)}>✕</button>
                   </div>
@@ -220,6 +231,74 @@ export default function MoneyClient() {
         </div>
       </div>
       <MobileTabs />
+      {drafts && (
+        <ImportPreview
+          drafts={drafts}
+          onClose={() => setDrafts(null)}
+          onDone={async () => { setDrafts(null); await load(); }}
+          onError={setErr}
+        />
+      )}
+    </div>
+  );
+}
+
+/** 明細ファイルから抽出した支出の確認モーダル。行の除外・カテゴリ修正→一括登録。 */
+function ImportPreview({ drafts, onClose, onDone, onError }: {
+  drafts: Draft[]; onClose: () => void; onDone: () => void; onError: (m: string) => void;
+}) {
+  const [rows, setRows] = useState(() => drafts.map((d) => ({ ...d, keep: true })));
+  const [busy, setBusy] = useState(false);
+  const keepRows = rows.filter((r) => r.keep);
+  const total = keepRows.reduce((s, r) => s + r.amountYen, 0);
+  const fmtDay = (ms: number | null) => (ms ? new Date(ms).toISOString().slice(0, 10) : "日付不明");
+
+  const commit = async () => {
+    setBusy(true);
+    try {
+      const r = await fetch("/api/money", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ drafts: keepRows.map(({ keep: _keep, ...d }) => d) }),
+      });
+      const d = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(d?.detail ?? `HTTP ${r.status}`);
+      onError(d.skipped > 0 ? `${d.created.length}件を登録（同額・同日の${d.skipped}件は重複としてスキップ）` : `${d.created.length}件を登録しました`);
+      onDone();
+    } catch (e) {
+      onError(`一括登録: ${String(e).slice(0, 200)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="scrim" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="modal" style={{ maxWidth: 640, width: "92vw" }}>
+        <h3 style={{ marginTop: 0 }}>明細から支出を取込</h3>
+        <p className="hint">
+          {keepRows.length}件 / 計 {yen(total)}。要らない行はチェックを外してください。既存と同額・同日の行は登録時に自動スキップされます。
+        </p>
+        <div style={{ maxHeight: "56vh", overflowY: "auto", margin: "8px 0" }}>
+          {rows.map((r, i) => (
+            <div key={i} className="card" style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", marginBottom: 4, opacity: r.keep ? 1 : 0.45 }}>
+              <input type="checkbox" checked={r.keep} onChange={(e) => setRows((rs) => rs.map((x, j) => j === i ? { ...x, keep: e.target.checked } : x))} />
+              <span className="hint" style={{ minWidth: 78 }}>{fmtDay(r.whenMs)}</span>
+              <span style={{ minWidth: 78, fontWeight: 600, textAlign: "right" }}>{yen(r.amountYen)}</span>
+              <select value={r.category} onChange={(e) => setRows((rs) => rs.map((x, j) => j === i ? { ...x, category: e.target.value } : x))}>
+                {CATS.map((c) => <option key={c} value={c}>{CATEGORY_LABEL[c]}</option>)}
+              </select>
+              <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.title ?? ""}</span>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button className="btn" onClick={onClose} disabled={busy}>キャンセル</button>
+          <button className="btn btn-primary" onClick={() => void commit()} disabled={busy || keepRows.length === 0}>
+            {busy ? "登録中…" : `${keepRows.length}件を登録`}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

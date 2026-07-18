@@ -3,7 +3,11 @@ import { and, desc, gte, isNull, lt } from "drizzle-orm";
 import { eq } from "drizzle-orm";
 import { db } from "./db";
 import { expenses } from "./db/schema";
-import { extractJson } from "./agent";
+import { execFile } from "node:child_process";
+import fs from "node:fs/promises";
+import path from "node:path";
+import os from "node:os";
+import { extractJson, runAgentAuto } from "./agent";
 import { runVisionAuto } from "./vision";
 import { CATEGORY_LABEL, EXPENSE_CATEGORIES, isExpenseCategory } from "./money-shared";
 import { InputError } from "./write-validation";
@@ -191,6 +195,84 @@ export async function extractExpenseFromImage(imageAbs: string): Promise<{
   const drafts = parsed
     .filter((p) => typeof p.amountYen === "number" && p.amountYen > 0)
     .slice(0, 10)
+    .map((p) => ({
+      amountYen: Math.round(p.amountYen as number),
+      category: isExpenseCategory(p.category) ? p.category : "other",
+      title: p.title?.slice(0, 200) ?? null,
+      note: p.note?.slice(0, 500) || null,
+      whenMs: p.when ? (Number.isNaN(Date.parse(p.when)) ? null : Date.parse(p.when)) : null,
+    }));
+  return { drafts, ok: true, jobId: res.jobId };
+}
+
+/** 明細ファイルの対応拡張子。csv/txtは生読み、pdf/xlsxはextract-text.pyで抽出。 */
+export const EXPENSE_FILE_EXT = new Set([".csv", ".txt", ".tsv", ".pdf", ".xlsx", ".xls"]);
+const SELF_EXTRACT = new Set([".pdf", ".xlsx", ".xls"]);
+const EXTRACT_PY = path.join(process.cwd(), "scripts", "extract-text.py");
+const EXTRACT_PYTHON =
+  process.env.KAIROS_EXTRACT_PYTHON ??
+  path.join(os.homedir(), ".local", "share", "uv", "tools", "open-webui", "bin", "python");
+
+function extractDocText(abs: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile(EXTRACT_PYTHON, [EXTRACT_PY, abs], { maxBuffer: 12_000_000, timeout: 120_000 }, (err, stdout) =>
+      resolve(err ? null : stdout),
+    );
+  });
+}
+
+/**
+ * 明細ファイル（銀行・クレカ・PayPay等のCSV/PDF/Excelエクスポート）から
+ * 支出ドラフトを一括抽出する（保存はしない — UIで確認して一括登録）。
+ * 列レイアウトが提供元ごとに違うのでAIに解釈させる。入金・振替・残高は除外。
+ */
+export async function extractExpensesFromFile(fileAbs: string, filename: string): Promise<{
+  drafts: { amountYen: number; category: string; title: string | null; note: string | null; whenMs: number | null }[];
+  ok: boolean;
+  error?: string;
+  jobId: string;
+}> {
+  const ext = path.extname(filename).toLowerCase();
+  let text: string | null;
+  if (SELF_EXTRACT.has(ext)) text = await extractDocText(fileAbs);
+  else text = await fs.readFile(fileAbs, "utf8").catch(async () => {
+    // CSVはcp932(Shift-JIS)のことが多い — iconvせず bufferをlatin1で読んで判定は諦め、
+    // まずutf8、ダメなら生バイトをそのまま渡す（AI側がある程度読める）
+    const buf = await fs.readFile(fileAbs).catch(() => null);
+    return buf ? buf.toString("utf8") : null;
+  });
+  if (!text?.trim()) return { drafts: [], ok: false, error: "ファイルからテキストを取り出せませんでした", jobId: "" };
+
+  const nowISO = new Date().toISOString();
+  const prompt = [
+    `今日は ${nowISO} です（参照用）。`,
+    `以下は銀行・クレジットカード・決済アプリ（PayPay等）・家計簿の利用明細ファイル（${filename}）の中身です。`,
+    `ここから【支出（出金・引き落とし・カード利用）】だけを抜き出してください。`,
+    `入金・給与・振込受取・残高・振替（自分の口座間移動）・ポイント付与は除外すること。`,
+    `返却フォーマットは次の JSON 配列だけ（前後に文章・コードフェンス不要）:`,
+    `[{`,
+    `  "amountYen": 支出額の数値(円・正の整数),`,
+    `  "category": "${EXPENSE_CATEGORIES.join('" | "')}",`,
+    `  "title": "利用先・店名・品目の短い見出し",`,
+    `  "note": "補足（任意・カード名や明細の備考など）",`,
+    `  "when": "利用日 ISO8601 例 2026-07-06（時刻不明なら日付のみ、読めなければ null）"`,
+    `}]`,
+    `金額の符号やカッコで出金を表す形式（例 -1200 や △1200 や (1200)）は支出として正の数にする。`,
+    `カテゴリは店名・用途から推定（食料品店・コンビニ→meal、交通→transport等）。不明は other。`,
+    `推測で金額や件数を水増ししない。明細が無ければ [] を返す。`,
+    ``,
+    `# 明細`,
+    text.slice(0, 60_000),
+  ].join("\n");
+
+  // 家計簿の一括取り込みは背景ジョブ扱い（claude枠が薄ければ自動フォールバック）
+  const res = await runAgentAuto(prompt, { jobKind: "import-expenses", timeoutMs: 300_000 });
+  if (!res.ok) return { drafts: [], ok: false, error: res.error, jobId: res.jobId };
+  const parsed = extractJson<RawExpense[]>(res.text);
+  if (!Array.isArray(parsed)) return { drafts: [], ok: false, error: "抽出結果をJSONとして解釈できませんでした", jobId: res.jobId };
+  const drafts = parsed
+    .filter((p) => typeof p.amountYen === "number" && p.amountYen > 0)
+    .slice(0, 300)
     .map((p) => ({
       amountYen: Math.round(p.amountYen as number),
       category: isExpenseCategory(p.category) ? p.category : "other",

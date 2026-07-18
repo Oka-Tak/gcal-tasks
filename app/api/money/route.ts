@@ -1,8 +1,12 @@
 import { type NextRequest } from "next/server";
 import { auth } from "@/auth";
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import os from "node:os";
+import crypto from "node:crypto";
 import {
-  createExpense, deleteExpense, extractExpenseFromImage, listExpenses,
-  monthSummary, updateExpense,
+  createExpense, deleteExpense, EXPENSE_FILE_EXT, extractExpenseFromImage, extractExpensesFromFile,
+  listExpenses, monthSummary, updateExpense,
 } from "@/lib/money";
 import { saveUploadImage } from "@/lib/logs";
 import { InputError } from "@/lib/write-validation";
@@ -11,6 +15,8 @@ import { isExpenseCategory } from "@/lib/money-shared";
 export const runtime = "nodejs";
 
 const MAX_IMAGE_BYTES = 15_000_000;
+const MAX_FILE_BYTES = 20_000_000;
+const IMG_EXT = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic"]);
 
 async function requireUser() {
   const session = await auth();
@@ -46,8 +52,29 @@ export async function POST(req: NextRequest) {
   if ((req.headers.get("content-type") ?? "").includes("multipart/form-data")) {
     const form = await req.formData();
     const f = form.get("file");
-    if (!(f instanceof File) || f.size === 0 || f.size > MAX_IMAGE_BYTES)
-      return Response.json({ detail: "画像ファイルが不正です" }, { status: 400 });
+    if (!(f instanceof File) || f.size === 0) return Response.json({ detail: "ファイルが不正です" }, { status: 400 });
+    const ext = path.extname(f.name ?? "").toLowerCase();
+
+    // 明細ファイル（CSV/PDF/Excel）→ AIで一括抽出して「ドラフト」を返す（登録はまだしない）
+    if (EXPENSE_FILE_EXT.has(ext)) {
+      if (f.size > MAX_FILE_BYTES) return Response.json({ detail: "ファイルが大きすぎます（20MBまで）" }, { status: 400 });
+      const dir = path.join(os.tmpdir(), "kairos-money");
+      await fs.mkdir(dir, { recursive: true });
+      const tmp = path.join(dir, `${crypto.randomUUID()}${ext}`);
+      await fs.writeFile(tmp, Buffer.from(await f.arrayBuffer()));
+      try {
+        const r = await extractExpensesFromFile(tmp, f.name);
+        if (!r.ok) return Response.json({ detail: r.error ?? "抽出に失敗しました" }, { status: 422 });
+        if (!r.drafts.length) return Response.json({ detail: "支出明細を読み取れませんでした" }, { status: 422 });
+        return Response.json({ ok: true, preview: true, drafts: r.drafts });
+      } finally {
+        await fs.rm(tmp, { force: true }).catch(() => {});
+      }
+    }
+
+    // 画像（レシート/決済スクショ）→ 従来どおりAI抽出して即登録
+    if (!IMG_EXT.has(ext) && ext !== "") return Response.json({ detail: `未対応の形式です: ${ext}（画像 / csv / pdf / xlsx）` }, { status: 400 });
+    if (f.size > MAX_IMAGE_BYTES) return Response.json({ detail: "画像ファイルが不正です" }, { status: 400 });
     const abs = await saveUploadImage(Buffer.from(await f.arrayBuffer()), f.name || "receipt");
     const r = await extractExpenseFromImage(abs);
     if (!r.ok) return Response.json({ detail: r.error ?? "抽出に失敗しました" }, { status: 422 });
@@ -59,6 +86,32 @@ export async function POST(req: NextRequest) {
   }
 
   const b = (await req.json()) as Record<string, unknown>;
+
+  // ファイル取込のドラフトを確認して一括登録
+  if (Array.isArray(b.drafts)) {
+    const existing = listExpenses(0, Date.now() + 400 * 86_400_000);
+    const seen = new Set(existing.map((e) => `${e.amountYen}|${new Date(e.whenMs ?? 0).toISOString().slice(0, 10)}`));
+    const created: unknown[] = [];
+    let skipped = 0;
+    for (const raw of b.drafts.slice(0, 300)) {
+      const d = raw as Record<string, unknown>;
+      const amountYen = Number(d.amountYen);
+      if (!Number.isFinite(amountYen) || amountYen <= 0 || amountYen > 10_000_000) continue;
+      const category = isExpenseCategory(d.category) ? d.category : "other";
+      const whenMs = typeof d.whenMs === "number" && Number.isFinite(d.whenMs) ? d.whenMs : Date.now();
+      const dupKey = `${Math.round(amountYen)}|${new Date(whenMs).toISOString().slice(0, 10)}`;
+      if (seen.has(dupKey)) { skipped++; continue; } // 同額・同日は既存とみなしスキップ
+      seen.add(dupKey);
+      created.push(createExpense({
+        amountYen: Math.round(amountYen), category,
+        title: typeof d.title === "string" ? d.title : null,
+        note: typeof d.note === "string" ? d.note : null,
+        whenMs, source: "import",
+      }));
+    }
+    return Response.json({ ok: true, created, skipped });
+  }
+
   const amountYen = Number(b.amountYen);
   if (!Number.isFinite(amountYen) || amountYen === 0 || Math.abs(amountYen) > 10_000_000)
     return Response.json({ detail: "amountYen は 0 以外の数値です" }, { status: 400 });
