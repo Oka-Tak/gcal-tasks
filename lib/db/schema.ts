@@ -342,7 +342,7 @@ export const expenses = sqliteTable(
   {
     id: text("id").primaryKey(), // uuid
     amountYen: integer("amount_yen").notNull(),
-    category: text("category").notNull(), // food | cafe | daily | transport | fun | book | sub | social | other
+    category: text("category").notNull(), // 値は lib/money-shared.ts の EXPENSE_CATEGORIES を正とする（food/cafe/daily/apparel/health/transport/lodging/fun/funsub/book/sub/phone/social/other）
     title: text("title"), // 店名や品目 例 "セブン 昼食"
     note: text("note"),
     whenMs: integer("when_ms").notNull(), // 支払い日時 (epoch ms)
