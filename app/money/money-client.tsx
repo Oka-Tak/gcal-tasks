@@ -159,7 +159,7 @@ export default function MoneyClient() {
           <span style={{ margin: "0 8px", fontWeight: 600 }}>{ym.y}/{pad(ym.m)}</span>
           <button className="btn" onClick={() => shiftMonth(1)} disabled={isCurrent}>→</button>
         </div>
-        <div className="pagewrap">
+        <div className="scrollwrap">
           <div className="page">
             {err && <p className="errline">{err}</p>}
 
@@ -228,13 +228,7 @@ export default function MoneyClient() {
                   {g.day} <span style={{ fontWeight: 400 }}>計 {yen(g.rows.reduce((s, r) => s + r.amountYen, 0))}</span>
                 </h3>
                 {g.rows.map((e) => (
-                  <div key={e.id} className="card" style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", marginBottom: 6 }}>
-                    <span style={{ minWidth: 84, fontWeight: 600, textAlign: "right" }}>{yen(e.amountYen)}</span>
-                    <span className="hint">{CATEGORY_LABEL[e.category] ?? e.category}</span>
-                    <span style={{ flex: 1 }}>{e.title ?? ""}{e.source === "screenshot" ? " 📷" : e.source === "import" ? " 📄" : e.source === "agent" ? " 🤖" : ""}</span>
-                    <span className="hint">{pad(new Date(e.whenMs).getHours())}:{pad(new Date(e.whenMs).getMinutes())}</span>
-                    <button className="btn" onClick={() => void del(e.id)}>✕</button>
-                  </div>
+                  <Row key={e.id} e={e} onChanged={load} onDelete={del} onError={setErr} />
                 ))}
               </div>
             ))}
@@ -255,6 +249,86 @@ export default function MoneyClient() {
           onError={setErr}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * 支出1行。タップで編集を開き、ジャンル（カテゴリ）変更・金額修正・詳細メモを記入できる。
+ * 詳細メモ（note）は mnemo/AI のRAG材料になる（kairosContext が拾う）ので、
+ * 「何のための出費か」を書いておくと後でAIが文脈として使える。
+ */
+function Row({ e, onChanged, onDelete, onError }: {
+  e: Expense; onChanged: () => Promise<void>; onDelete: (id: string) => Promise<void>; onError: (m: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [amount, setAmount] = useState(String(e.amountYen));
+  const [category, setCategory] = useState(e.category);
+  const [title, setTitle] = useState(e.title ?? "");
+  const [note, setNote] = useState(e.note ?? "");
+  const [busy, setBusy] = useState(false);
+  const srcMark = e.source === "screenshot" ? " 📷" : e.source === "import" ? " 📄" : e.source === "agent" ? " 🤖" : "";
+
+  const save = async () => {
+    const n = Number(amount);
+    if (!Number.isFinite(n) || n === 0 || busy) return;
+    setBusy(true);
+    try {
+      await api("PATCH", "/api/money", {
+        id: e.id, amountYen: n, category, title: title.trim() || null, note: note.trim() || null,
+      });
+      setOpen(false);
+      await onChanged();
+    } catch (err) {
+      onError(`更新: ${String(err).slice(0, 200)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (open) {
+    return (
+      <div className="card" style={{ padding: "10px 12px", marginBottom: 6, display: "flex", flexDirection: "column", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <input type="number" inputMode="numeric" value={amount} onChange={(ev) => setAmount(ev.target.value)} style={{ width: 110 }} />
+          <select value={category} onChange={(ev) => setCategory(ev.target.value)}>
+            {CATS.map((c) => <option key={c} value={c}>{CATEGORY_LABEL[c]}</option>)}
+          </select>
+          <input placeholder="店名・品目" value={title} onChange={(ev) => setTitle(ev.target.value)} style={{ flex: 1, minWidth: 140 }} />
+        </div>
+        <textarea
+          placeholder="詳細メモ（任意）— 何のための出費か・誰と・用途など。AIが文脈として参照します。"
+          value={note} onChange={(ev) => setNote(ev.target.value)}
+          rows={2} style={{ width: "100%", resize: "vertical", fontFamily: "inherit" }}
+        />
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button className="btn" onClick={() => void onDelete(e.id)} disabled={busy} style={{ marginRight: "auto" }}>削除</button>
+          <button className="btn" onClick={() => setOpen(false)} disabled={busy}>キャンセル</button>
+          <button className="btn btn-primary" onClick={() => void save()} disabled={busy}>{busy ? "保存中…" : "保存"}</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="card" onClick={() => setOpen(true)}
+      style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", marginBottom: 6, cursor: "pointer" }}
+      title="タップで編集（ジャンル変更・詳細メモ）"
+    >
+      <span style={{ minWidth: 84, fontWeight: 600, textAlign: "right" }}>{yen(e.amountYen)}</span>
+      <span className="hint">{CATEGORY_LABEL[e.category] ?? e.category}</span>
+      <span style={{ flex: 1, minWidth: 0 }}>
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>
+          {e.title ?? ""}{srcMark}{e.note ? " 📝" : ""}
+        </span>
+        {e.note && (
+          <span className="hint" style={{ fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "block" }}>
+            {e.note}
+          </span>
+        )}
+      </span>
+      <span className="hint">{pad(new Date(e.whenMs).getHours())}:{pad(new Date(e.whenMs).getMinutes())}</span>
     </div>
   );
 }
