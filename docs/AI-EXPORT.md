@@ -70,5 +70,6 @@ systemctl --user start ai-export-watch.service
 ## 関連
 
 - フォールバック（Claude→他LLM/ローカル）: [AGENT-FALLBACK.md](./AGENT-FALLBACK.md)
-- 用語集（AIに誤解させない固有名詞）: [GLOSSARY.md](./GLOSSARY.md)
+- 用語集（AIに誤解させない固有名詞）: mnemo の UI（:8443）で編集、`kairos.db` の glossary テーブル
+  （`lib/glossary.ts`）。`lib/kairos.ts` が全AI会話に注入する。
 - 取り込んだ履歴は mnemo の人物メモ抽出・RAG の材料になる（bridge/rag.ts, lib/kairos.ts）。
