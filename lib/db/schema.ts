@@ -342,7 +342,7 @@ export const expenses = sqliteTable(
   {
     id: text("id").primaryKey(), // uuid
     amountYen: integer("amount_yen").notNull(),
-    category: text("category").notNull(), // 値は lib/money-shared.ts の EXPENSE_CATEGORIES を正とする（food/cafe/daily/apparel/health/transport/lodging/fun/funsub/book/sub/phone/social/other）
+    category: text("category").notNull(), // 値は lib/money-shared.ts の EXPENSE_CATEGORIES を正とする（food/cafe/daily/apparel/health/transport/lodging/fun/book/sub/phone/social/other）
     title: text("title"), // 店名や品目 例 "セブン 昼食"
     note: text("note"),
     whenMs: integer("when_ms").notNull(), // 支払い日時 (epoch ms)
@@ -368,7 +368,7 @@ export const subscriptions = sqliteTable(
     id: text("id").primaryKey(), // uuid
     name: text("name").notNull(), // サービス名 例 "Netflix"
     amountYen: integer("amount_yen").notNull(), // 月額
-    category: text("category").notNull().default("sub"), // 表示上の属性（sub / funsub 等）
+    category: text("category").notNull().default("sub"), // 表示上の属性（sub / fun 等、EXPENSE_CATEGORIES）
     billingDay: integer("billing_day").notNull().default(1), // 課金日 1-28（月末揺れ回避で28上限）
     note: text("note"),
     active: integer("active").notNull().default(1), // 1=稼働中 / 0=停止（以後は計上しない）

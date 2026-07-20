@@ -2,7 +2,7 @@
 
 export const EXPENSE_CATEGORIES = [
   "food", "cafe", "daily", "apparel", "health", "transport", "lodging",
-  "fun", "funsub", "book", "sub", "phone", "social", "other",
+  "fun", "book", "sub", "phone", "social", "other",
 ] as const;
 export type ExpenseCategory = (typeof EXPENSE_CATEGORIES)[number];
 
@@ -15,7 +15,6 @@ export const CATEGORY_LABEL: Record<string, string> = {
   transport: "🚃 交通",
   lodging: "🏨 宿泊",
   fun: "🎮 娯楽",
-  funsub: "🎬 娯楽サブスク",
   book: "📚 書籍・学習",
   sub: "🔁 サブスク",
   phone: "📱 通信費",
