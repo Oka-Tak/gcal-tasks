@@ -208,7 +208,18 @@ export function diarizeEnabled(): boolean {
 const wxProcs = new Map<string, ReturnType<typeof spawn>>();
 const stopRequested = new Set<string>();
 
+// 文字起こしはマシン全体で1本ずつ直列化する。large-v3-turbo は1本あたり約4GB食う
+// ので、複数音源の同時アップロードで並列に走ると OOM で kairos ごと落ちる
+// （2026-07-22深夜: 5本同時 → whisperx が OOM kill → サービス連鎖死の実績）。
+let wxQueue: Promise<unknown> = Promise.resolve();
+
 function runWhisperx(audioAbs: string, outDir: string, language = "ja", audioId?: string): Promise<{ ok: boolean; err: string }> {
+  const run = wxQueue.then(() => runWhisperxNow(audioAbs, outDir, language, audioId));
+  wxQueue = run.catch(() => {}); // 失敗しても列は前に進める
+  return run;
+}
+
+function runWhisperxNow(audioAbs: string, outDir: string, language = "ja", audioId?: string): Promise<{ ok: boolean; err: string }> {
   return new Promise((resolve) => {
     const dia = diarizeEnabled();
     const args = [
