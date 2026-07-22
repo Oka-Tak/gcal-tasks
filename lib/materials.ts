@@ -18,7 +18,7 @@ import { resolveNoteDir } from "./notes-export";
  */
 
 const SUBDIR = "materials";
-const MAX_BYTES = 50_000_000;
+const MAX_BYTES = 300_000_000; // 録画入りpptx等で100MB超は普通にある
 const SYNC_ROOT = process.env.KAIROS_SYNC_ROOT ?? path.join(os.homedir(), "onedrive-sync");
 const SYNC_STATE = path.join(os.homedir(), ".local", "state", "owui-sync.json");
 
@@ -86,7 +86,7 @@ export async function addMaterial(opts: {
 }): Promise<MaterialView> {
   const ext = (path.extname(opts.filename) || "").toLowerCase();
   if (!owuiSupportedExt(ext)) throw new Error(`未対応の形式です: ${ext || "(拡張子なし)"}（pdf/docx/pptx/xlsx/csv/txt/md/html）`);
-  if (opts.buf.length === 0 || opts.buf.length > MAX_BYTES) throw new Error("ファイルが空か大きすぎます（50MBまで）");
+  if (opts.buf.length === 0 || opts.buf.length > MAX_BYTES) throw new Error("ファイルが空か大きすぎます（300MBまで）");
   const notebook = notebookFor(opts.notebook, opts.eventKey) ?? "Kairos ノート";
 
   const id = crypto.randomUUID();

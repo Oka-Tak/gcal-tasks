@@ -6,8 +6,9 @@ import { uploadSetError } from "@/lib/upload-limits";
 export const runtime = "nodejs";
 
 const MAX_FILES = 8;
-const MAX_FILE_BYTES = 50_000_000;
-const MAX_TOTAL_BYTES = 200_000_000;
+// 録画入りpptx・スキャンPDF等で100MB超は普通にある（lib/materials.ts と同期）
+const MAX_FILE_BYTES = 300_000_000;
+const MAX_TOTAL_BYTES = 500_000_000;
 
 async function requireUser() {
   const session = await auth();

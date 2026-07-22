@@ -11,9 +11,11 @@ import { uploadSetError } from "@/lib/upload-limits";
 
 export const runtime = "nodejs";
 
-const MAX_BYTES = 50_000_000;
+// 録画入りpptxやスキャンPDFで100MB超は普通にあるので余裕を持たせる
+// (テキスト抽出側は出力行数/文字数で上限管理しており入力サイズには耐性がある)
+const MAX_BYTES = 300_000_000;
 const MAX_FILES = 8;
-const MAX_TOTAL_BYTES = 200_000_000;
+const MAX_TOTAL_BYTES = 500_000_000;
 
 /**
  * POST multipart {id, file×N} — 既存ノートに資料（pdf/pptx等）を後付けする。
