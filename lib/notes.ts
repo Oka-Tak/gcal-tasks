@@ -223,6 +223,9 @@ function runWhisperx(audioAbs: string, outDir: string, language = "ja", audioId?
       // 幻覚ループ対策: 前セグメントの文脈引き継ぎを切る(雑音・無音で
       // 「私たちの話をしていますが…」型の無限繰り返しになる既知の問題)
       "--condition_on_previous_text", "False",
+      // 同一フレーズ反復の検出を既定(2.4)より厳しく。gzip圧縮率がこれを超える
+      // 出力(=繰り返しだらけ)は棄却して温度を上げて再デコードさせる
+      "--compression_ratio_threshold", "2.2",
       "--output_dir", outDir,
       "--output_format", dia ? "json" : "txt", // 話者ラベルはjsonにしか出ない
     ];
