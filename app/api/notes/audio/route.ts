@@ -1,6 +1,6 @@
 import { type NextRequest } from "next/server";
 import { auth } from "@/auth";
-import { addAudiosToNote } from "@/lib/notes";
+import { addAudiosToNote, deleteAudio } from "@/lib/notes";
 import { uploadSetError } from "@/lib/upload-limits";
 
 export const runtime = "nodejs";
@@ -41,4 +41,20 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     return Response.json({ detail: String(e) }, { status: 400 });
   }
+}
+
+/**
+ * DELETE ?id=<noteId>&audioId=<audioId> — 間違って上げた音源を1本だけ削除する。
+ * 実行中なら止めてから消し、残りを結合し直して要約を作り直す。
+ */
+export async function DELETE(req: NextRequest) {
+  const session = await auth();
+  if (!session?.user) return Response.json({ detail: "unauthenticated" }, { status: 401 });
+  const sp = new URL(req.url).searchParams;
+  const id = sp.get("id");
+  const audioId = sp.get("audioId");
+  if (!id || !audioId) return Response.json({ detail: "id と audioId が必要です" }, { status: 400 });
+  const ok = await deleteAudio(id, audioId);
+  if (!ok) return Response.json({ detail: "音源が見つかりません" }, { status: 404 });
+  return Response.json({ ok: true });
 }

@@ -666,6 +666,47 @@ export async function resumeInterruptedNotes(): Promise<void> {
  * audioId 指定でその音源だけ、省略で全音源をやり直し、結合・要約し直す。
  * language="keep" は各音源の言語設定を変えずにやり直す（♻全更新用）。
  */
+/**
+ * 音源を1本だけ削除する（間違った音源を上げてしまったとき）。実行中なら
+ * whisperx を止めてから行を消し、ファイル実体も消す。残った音源は seq を
+ * 詰め直したうえで結合し直し、要約を作り直す（＝間違い分が要約から消える）。
+ * 最後の1本を消した場合は文字起こし無しの状態にして、資料だけで要約し直す。
+ */
+export async function deleteAudio(noteId: string, audioId: string): Promise<boolean> {
+  const r = db.select().from(notes).where(eq(notes.id, noteId)).get();
+  if (!r || r.deletedAt) return false;
+  const rows = audioRows(noteId);
+  const target = rows.find((a) => a.id === audioId);
+  if (!target) return false;
+
+  // 実行中なら先に殺す（消した後に書き戻されないように）
+  if (wxProcs.has(target.id)) {
+    wxProcs.get(target.id)?.kill("SIGKILL");
+    wxProcs.delete(target.id);
+  }
+  if (target.audioPath) await fs.rm(target.audioPath, { force: true }).catch(() => {});
+  db.delete(noteAudios).where(eq(noteAudios.id, target.id)).run();
+
+  // 残りの seq を 1..n に詰め直す（見出し「音源N」が飛ばないように）
+  const rest = audioRows(noteId);
+  rest.forEach((a, i) => {
+    if (a.seq !== i + 1) db.update(noteAudios).set({ seq: i + 1 }).where(eq(noteAudios.id, a.id)).run();
+  });
+
+  const notebook = r.notebook ?? notebookFor(null, r.eventKey);
+  const title = r.title ?? "(無題)";
+  if (rest.length === 0) {
+    // 音源が無くなった: 文字起こしを空にして資料だけで作り直す
+    setStatus(noteId, "summarizing", { error: null, transcript: null });
+    void summarizeAndPublish(noteId, title, null, notebook, "");
+  } else {
+    // 残りを結合して再要約（pending が残っていれば続きも流れる）
+    setStatus(noteId, "summarizing", { error: null });
+    void pipeline(noteId, title, null, notebook);
+  }
+  return true;
+}
+
 export function redoTranscription(id: string, language = "ja", audioId?: string | null): boolean {
   const r = db.select().from(notes).where(eq(notes.id, id)).get();
   if (!r || r.deletedAt) return false;

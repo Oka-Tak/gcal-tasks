@@ -380,8 +380,15 @@ async function runAgy(prompt: string, o: RunOptions, timeoutMs: number): Promise
   // agy --print <prompt> runs non-interactively and prints only the response —
   // the prompt is the flag's VALUE, not a positional. The model is antigravity's
   // display string with effort baked in ("Gemini 3.5 Flash (High)").
+  //
+  // agy は独自の権限システムを持ち、ヘッドレス(--print)では許可プロンプトを出せず
+  // ファイル検索やシェル実行を自動拒否する（「フォルダからバスのURLを探して」等が
+  // 何もできず終わる）。--dangerously-skip-permissions で自動承認する。
+  // ＝ Kairosの4エージェントのうち agy を「実際に手を動かせる担当」に位置づける。
+  // 他(claude=WebSearch/WebFetchのみ, copilot=ツール拒否, codex=サンドボックス)は
+  // 従来どおり制限。※agyはRAG/フォルダ内容も読むので、投げる依頼には注意。
   const dataAbs = path.resolve(env.dataDir);
-  const args = ["--print", prompt];
+  const args = ["--dangerously-skip-permissions", "--print", prompt];
   if (o.model) args.push("--model", o.effort ? `${o.model} (${o.effort})` : o.model);
   return spawnCapture(env.agyBin, args, { cwd: dataAbs, timeoutMs });
 }

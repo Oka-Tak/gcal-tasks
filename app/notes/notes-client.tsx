@@ -247,6 +247,18 @@ function NoteModal({ id, onClose, onChanged }: {
     }
   };
 
+  // 音源を1本だけ削除（間違って別の音源を上げたとき）。残りを結合し直して再要約される。
+  const removeAudio = async (audioId: string, label: string) => {
+    if (!confirm(`音源「${label}」を削除します。\n残りの音源で文字起こしを結合し直し、要約も作り直します。元に戻せません。よろしいですか？`)) return;
+    try {
+      await api("DELETE", `/api/notes/audio?id=${encodeURIComponent(id)}&audioId=${encodeURIComponent(audioId)}`);
+      await load();
+      onChanged();
+    } catch (e) {
+      setErr(String(e).slice(0, 200));
+    }
+  };
+
   // 音源の追加（選んだ言語で即アップロード → 追加分だけ文字起こし → 再要約）
   const [addLang, setAddLang] = useState("ja");
   const addRef = useRef<HTMLInputElement>(null);
@@ -374,6 +386,10 @@ function NoteModal({ id, onClose, onChanged }: {
                         <option value="auto">自動判定で</option>
                       </select>
                     )}
+                    <button
+                      className="btn" title="この音源を削除（間違って上げたとき）。残りを結合し直して要約も作り直します"
+                      onClick={() => void removeAudio(a.id, a.label ?? `#${a.seq}`)}
+                    >✕</button>
                   </div>
                 ))}
               </div>
