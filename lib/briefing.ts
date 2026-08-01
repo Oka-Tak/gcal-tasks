@@ -56,10 +56,11 @@ function dueTasks(now: Date, muted: (t: string | null | undefined) => boolean): 
       return !!due && due >= today && due <= horizon && !muted(t.title);
     })
     .sort((a, b) => (a.due ?? "").localeCompare(b.due ?? ""));
+  // 所要時間の見積りは朝の通知には出さない（当たらない数字が並ぶと逆にノイズ。
+  // 見積りが要るときはアプリのタスク欄・プランで見る）
   return rows.slice(0, 8).map((t) => {
     const due = t.due?.slice(5, 10)?.replace("-", "/");
-    const est = t.estimatedMin != null ? ` (${t.estimatedMin}分)` : "";
-    return `・${due}${t.dueTime ? ` ${t.dueTime.slice(0, 5)}` : ""}締切 ${t.title ?? "タスク"}${est}`;
+    return `・${due}${t.dueTime ? ` ${t.dueTime.slice(0, 5)}` : ""}締切 ${t.title ?? "タスク"}`;
   });
 }
 

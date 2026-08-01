@@ -91,6 +91,30 @@ export function buildPlan(horizonDays = 3): PlanResult {
     .filter((e) => e.status !== "cancelled" && !e.allDay && e.startMs != null && e.endMs != null)
     .filter((e) => e.endMs! > now && e.startMs! < horizonEnd);
 
+  // 終日予定のある日は丸ごと予定が入っている日（旅行・大会・実習など）なので、
+  // そこに作業枠を提案しない。時刻が無い＝空き時間の計算に乗らないため、放って
+  // おくと「終日イベントがあるのに普通に作業枠が埋め込まれる」ことになる。
+  const allDayDates = new Set(
+    db
+      .select()
+      .from(events)
+      .where(isNull(events.deletedAt))
+      .all()
+      .filter((e) => e.status !== "cancelled" && e.allDay && e.startMs != null && e.endMs != null)
+      // 祝日カレンダー（「山の日」等）は終日予定だが実際は作業できる日なので除外しない
+      .filter((e) => !(e.calendarId ?? "").includes("#holiday@"))
+      .filter((e) => e.endMs! > now && e.startMs! < horizonEnd)
+      .flatMap((e) => {
+        // 終日は [開始日, 終了日) の半開区間で入るので日付単位に展開する
+        const out: string[] = [];
+        for (let t = e.startMs!; t < e.endMs!; t += 86_400_000) {
+          const d = new Date(t);
+          out.push(`${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`);
+        }
+        return out;
+      }),
+  );
+
   // 空きスロット（日ごとに 起床〜就寝 から予定+blockルーチンを引く）
   const slots: Slot[] = [];
   const deadlineMarks: PlanBlock[] = [];
@@ -99,6 +123,8 @@ export function buildPlan(horizonDays = 3): PlanResult {
     const dayStart = day.getTime() + wakeMin * 60_000;
     const dayEnd = day.getTime() + bedMin * 60_000;
     if (dayEnd <= now) continue;
+    // 終日予定の日は作業枠を作らない（締切マークは下のループで拾うので continue しない）
+    const isAllDay = allDayDates.has(`${day.getFullYear()}-${day.getMonth() + 1}-${day.getDate()}`);
     const busy: Slot[] = evRows
       .filter((e) => e.startMs! < dayEnd && e.endMs! > dayStart)
       .map((e) => ({ s: e.startMs!, e: e.endMs! }));
@@ -111,7 +137,7 @@ export function buildPlan(horizonDays = 3): PlanResult {
       const at = day.getTime() + minsOf(r.endHm) * 60_000;
       if (at > now) deadlineMarks.push({ kind: "deadline", title: r.label, startMs: at, endMs: at, note: r.note ?? undefined });
     }
-    slots.push(...subtract({ s: Math.max(now, dayStart), e: dayEnd }, mergeBusy(busy)));
+    if (!isAllDay) slots.push(...subtract({ s: Math.max(now, dayStart), e: dayEnd }, mergeBusy(busy)));
   }
   slots.sort((a, b) => a.s - b.s);
 
