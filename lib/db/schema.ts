@@ -379,3 +379,25 @@ export const subscriptions = sqliteTable(
   },
   (t) => [index("subscriptions_active").on(t.active)],
 );
+
+/**
+ * 地点間の移動時間キャッシュ。移動手段(mode)はユーザーが指定し、minutes は
+ * その手段での片道所要分。AI(Web検索)が埋めることも、手で直すこともできる。
+ * from/to は正規化済みの地点名を辞書順で格納する（方向を区別しない）。
+ */
+export const travelRoutes = sqliteTable(
+  "travel_routes",
+  {
+    id: text("id").primaryKey(),
+    fromPlace: text("from_place").notNull(),
+    toPlace: text("to_place").notNull(),
+    mode: text("mode").notNull().default("未指定"), // 徒歩 | 自転車 | バス | 電車 | 車 | 公共交通
+    minutes: integer("minutes"), // 片道の所要分（null = 未調査）
+    note: text("note"),
+    source: text("source"), // manual | ai
+    createdAt: integer("created_at"),
+    updatedAt: integer("updated_at"),
+    deletedAt: integer("deleted_at"),
+  },
+  (t) => [index("travel_routes_pair").on(t.fromPlace, t.toPlace)],
+);

@@ -1,5 +1,6 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "./db";
+import { normalizePlace, needsTravel, lookupRoute } from "./travel";
 import { events, tasks } from "./db/schema";
 import { committedFutureMinutes } from "./plan-commit";
 import { dayMatches, listRoutines } from "./routines";
@@ -82,6 +83,10 @@ export function buildPlan(horizonDays = 3): PlanResult {
   let bedMin = sleep?.startHm ? minsOf(sleep.startHm) : 24 * 60;
   if (bedMin <= wakeMin) bedMin += 24 * 60; // 就寝が0時過ぎ = 翌日にまたぐ
 
+  // 拠点（一日の始点・終点）。既定は寮。KAIROS_HOME_PLACE で変更できる。
+  // 最初の予定へ向かう移動と、最後の予定から帰る移動を数えるのに要る。
+  const homeBase = process.env.KAIROS_HOME_PLACE ?? "あかつき寮";
+
   const horizonEnd = today.getTime() + horizonDays * 86_400_000 + bedMin * 60_000;
   const evRows = db
     .select()
@@ -125,9 +130,31 @@ export function buildPlan(horizonDays = 3): PlanResult {
     if (dayEnd <= now) continue;
     // 終日予定の日は作業枠を作らない（締切マークは下のループで拾うので continue しない）
     const isAllDay = allDayDates.has(`${day.getFullYear()}-${day.getMonth() + 1}-${day.getDate()}`);
-    const busy: Slot[] = evRows
+    // 予定そのものに加え、場所が変わる予定の前後は移動時間も塞ぐ。
+    // 移動中は作業できないので、ここを引かないと「学外の予定の直前まで作業枠」
+    // という現実に合わないプランになる。所要分は travel_routes のキャッシュ。
+    const dayEvents = evRows
       .filter((e) => e.startMs! < dayEnd && e.endMs! > dayStart)
-      .map((e) => ({ s: e.startMs!, e: e.endMs! }));
+      .sort((a, b) => a.startMs! - b.startMs!);
+    const busy: Slot[] = [];
+    for (let i = 0; i < dayEvents.length; i++) {
+      const e = dayEvents[i];
+      busy.push({ s: e.startMs!, e: e.endMs! });
+      const here = normalizePlace(e.location);
+      if (!here) continue;
+      // 直前の地点（同日の1つ前の予定、無ければ拠点）からの移動
+      const prev = i > 0 ? normalizePlace(dayEvents[i - 1].location) : homeBase;
+      if (needsTravel(prev, here)) {
+        const min = lookupRoute(prev!, here)?.minutes;
+        if (min) busy.push({ s: e.startMs! - min * 60_000, e: e.startMs! });
+      }
+      // 次の地点へ戻る/向かう移動（同日の次の予定、無ければ拠点へ帰る）
+      const next = i + 1 < dayEvents.length ? normalizePlace(dayEvents[i + 1].location) : homeBase;
+      if (needsTravel(here, next)) {
+        const min = lookupRoute(here, next!)?.minutes;
+        if (min) busy.push({ s: e.endMs!, e: e.endMs! + min * 60_000 });
+      }
+    }
     for (const r of rts) {
       if (r.kind !== "block" || !dayMatches(r.days, day) || !r.startHm || !r.endHm) continue;
       busy.push({ s: day.getTime() + minsOf(r.startHm) * 60_000, e: day.getTime() + minsOf(r.endHm) * 60_000 });
