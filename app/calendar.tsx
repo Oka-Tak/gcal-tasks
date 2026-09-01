@@ -872,10 +872,10 @@ function MergeModal({ groups, onClose, onMerged }: { groups: DupGroup[]; onClose
 }
 
 /* ------------------------------------------------------- planner + routines */
-type PlanBlock = { kind: "task" | "deadline"; title: string; startMs: number; endMs: number; taskKey?: string; note?: string };
+type PlanBlock = { kind: "task" | "deadline" | "travel"; title: string; startMs: number; endMs: number; taskKey?: string; note?: string };
 type PlanResp = {
   blocks: PlanBlock[];
-  now: { kind: string; title: string; untilMs: number | null; note?: string } | null;
+  now: { kind: string; title: string; untilMs: number | null; note?: string; place?: string | null; nextPlace?: string | null; departBy?: number | null } | null;
   warnings: string[];
   generatedAt: number;
 };
@@ -929,10 +929,13 @@ function PlanCard({ refreshKey }: { refreshKey: unknown }) {
   // 📌確定: 流動プランのブロックを「Kairos プラン」カレンダーのGoogle予定に昇格
   const [pinning, setPinning] = useState<string | null>(null);
   const pin = async (b: PlanBlock) => {
-    setPinning(`${b.taskKey}:${b.startMs}`);
+    setPinning(`${b.taskKey ?? b.title}:${b.startMs}`);
     setMsg(null);
     try {
-      await api("POST", "/api/plan/commit", { taskKey: b.taskKey, startMs: b.startMs, endMs: b.endMs });
+      await api("POST", "/api/plan/commit", {
+        ...(b.kind === "travel" ? { travelTitle: b.title, note: b.note } : { taskKey: b.taskKey }),
+        startMs: b.startMs, endMs: b.endMs,
+      });
       setMsg(`📌 ${hmOf(b.startMs)}-${hmOf(b.endMs)} を予定として確定しました`);
       reload();
     } catch (e) {
@@ -980,20 +983,31 @@ function PlanCard({ refreshKey }: { refreshKey: unknown }) {
       </div>
       {plan.now && (
         <div className="plannow">
-          {plan.now.kind === "event" ? "📅 " : plan.now.kind === "routine" ? "🏠 " : plan.now.kind === "task" ? "▶ " : ""}
+          {plan.now.kind === "event" ? "📅 " : plan.now.kind === "routine" ? "🏠 " : plan.now.kind === "task" ? "▶ " : plan.now.kind === "travel" ? "🚶 " : ""}
           {plan.now.title}
           {plan.now.untilMs && <span className="lmeta">（〜{hmOf(plan.now.untilMs)}）</span>}
+        </div>
+      )}
+      {plan.now?.place && (
+        <div className="plannow" style={{ opacity: 0.85 }}>
+          📍 いま: {plan.now.place}
+          {plan.now.nextPlace && (
+            <span className="lmeta">
+              {" "}→ 次: {plan.now.nextPlace}
+              {plan.now.departBy && `（${hmOf(plan.now.departBy)}に出発）`}
+            </span>
+          )}
         </div>
       )}
       <div className="planlist">
         {todays.map((b, i) => (
           <div key={i} className={`planrow${b.kind === "deadline" ? " dl" : ""}${b.endMs <= plan.generatedAt ? " past" : ""}`}>
             <span className="pt">{b.kind === "deadline" ? `${hmOf(b.startMs)} ⏰` : `${hmOf(b.startMs)}-${hmOf(b.endMs)}`}</span>
-            <span className="pl">{b.title}</span>
-            {b.kind === "task" && b.taskKey && b.endMs > plan.generatedAt && (
+            <span className="pl">{b.kind === "travel" ? "🚶 " : ""}{b.title}{b.note && b.kind === "travel" && <span className="lmeta">（{b.note}）</span>}</span>
+            {(b.kind === "task" ? !!b.taskKey : b.kind === "travel") && b.endMs > plan.generatedAt && (
               <button className="pinbtn" disabled={pinning != null}
                 title="この枠で確定 — 「Kairos プラン」カレンダーの予定になり、プランの組み直しで動かなくなります"
-                onClick={() => void pin(b)}>{pinning === `${b.taskKey}:${b.startMs}` ? "…" : "📌"}</button>
+                onClick={() => void pin(b)}>{pinning === `${b.taskKey ?? b.title}:${b.startMs}` ? "…" : "📌"}</button>
             )}
           </div>
         ))}

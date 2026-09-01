@@ -1,6 +1,6 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "./db";
-import { normalizePlace, needsTravel, lookupRoute } from "./travel";
+import { normalizePlace, needsTravel, lookupRoute, ONLINE, CAMPUS } from "./travel";
 import { events, tasks } from "./db/schema";
 import { committedFutureMinutes } from "./plan-commit";
 import { dayMatches, listRoutines } from "./routines";
@@ -15,7 +15,7 @@ import { parentTaskIdentity, taskIdentity } from "./task-identity";
  */
 
 export interface PlanBlock {
-  kind: "task" | "deadline";
+  kind: "task" | "deadline" | "travel";
   title: string;
   startMs: number;
   endMs: number; // deadline は start=end のマーカー
@@ -24,10 +24,15 @@ export interface PlanBlock {
 }
 
 export interface NowAction {
-  kind: "event" | "task" | "routine" | "free";
+  kind: "event" | "task" | "routine" | "free" | "travel";
   title: string;
   untilMs: number | null;
   note?: string;
+  /** 今いる（はずの）場所。予定の場所から推定する。 */
+  place?: string | null;
+  /** 次に行く場所と、そこへの出発時刻（移動が要るときだけ）。 */
+  nextPlace?: string | null;
+  departBy?: number | null;
 }
 
 export interface PlanResult {
@@ -83,9 +88,9 @@ export function buildPlan(horizonDays = 3): PlanResult {
   let bedMin = sleep?.startHm ? minsOf(sleep.startHm) : 24 * 60;
   if (bedMin <= wakeMin) bedMin += 24 * 60; // 就寝が0時過ぎ = 翌日にまたぐ
 
-  // 拠点（一日の始点・終点）。既定は寮。KAIROS_HOME_PLACE で変更できる。
-  // 最初の予定へ向かう移動と、最後の予定から帰る移動を数えるのに要る。
-  const homeBase = process.env.KAIROS_HOME_PLACE ?? "あかつき寮";
+  // 拠点（一日の始点・終点、居場所が不明なときの既定）。ユーザーが最も長く居る
+  // 場所＝静岡大学 浜松キャンパス（予定218件が学内）。KAIROS_HOME_PLACE で変更可。
+  const homeBase = process.env.KAIROS_HOME_PLACE ?? CAMPUS;
 
   const horizonEnd = today.getTime() + horizonDays * 86_400_000 + bedMin * 60_000;
   const evRows = db
@@ -123,6 +128,7 @@ export function buildPlan(horizonDays = 3): PlanResult {
   // 空きスロット（日ごとに 起床〜就寝 から予定+blockルーチンを引く）
   const slots: Slot[] = [];
   const deadlineMarks: PlanBlock[] = [];
+  const travelBlocks: PlanBlock[] = []; // 移動そのものも日程に出す（📌で予定化できる）
   for (let d = 0; d < horizonDays; d++) {
     const day = new Date(today.getTime() + d * 86_400_000);
     const dayStart = day.getTime() + wakeMin * 60_000;
@@ -146,13 +152,31 @@ export function buildPlan(horizonDays = 3): PlanResult {
       const prev = i > 0 ? normalizePlace(dayEvents[i - 1].location) : homeBase;
       if (needsTravel(prev, here)) {
         const min = lookupRoute(prev!, here)?.minutes;
-        if (min) busy.push({ s: e.startMs! - min * 60_000, e: e.startMs! });
+        if (min) {
+          busy.push({ s: e.startMs! - min * 60_000, e: e.startMs! });
+          travelBlocks.push({
+            kind: "travel",
+            title: `移動: ${prev} → ${here}`,
+            startMs: e.startMs! - min * 60_000,
+            endMs: e.startMs!,
+            note: `${lookupRoute(prev!, here)?.mode ?? ""} ${min}分`.trim(),
+          });
+        }
       }
       // 次の地点へ戻る/向かう移動（同日の次の予定、無ければ拠点へ帰る）
       const next = i + 1 < dayEvents.length ? normalizePlace(dayEvents[i + 1].location) : homeBase;
       if (needsTravel(here, next)) {
         const min = lookupRoute(here, next!)?.minutes;
-        if (min) busy.push({ s: e.endMs!, e: e.endMs! + min * 60_000 });
+        if (min) {
+          busy.push({ s: e.endMs!, e: e.endMs! + min * 60_000 });
+          travelBlocks.push({
+            kind: "travel",
+            title: `移動: ${here} → ${next}`,
+            startMs: e.endMs!,
+            endMs: e.endMs! + min * 60_000,
+            note: `${lookupRoute(here, next!)?.mode ?? ""} ${min}分`.trim(),
+          });
+        }
       }
     }
     for (const r of rts) {
@@ -242,13 +266,39 @@ export function buildPlan(horizonDays = 3): PlanResult {
       warnings.push(`「${w.title}」が期限までに約${Math.ceil(remain / 60_000)}分ぶん収まりません`);
     }
   }
-  blocks.push(...deadlineMarks);
+  blocks.push(...deadlineMarks, ...travelBlocks);
   blocks.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
 
   // 今なにをするか: 進行中の予定 > 進行中のblockルーチン > 現在のプランブロック > 次のブロック
   let nowAction: NowAction | null = null;
+  // 現在地の推定: 進行中の予定の場所 → 直近に終わった予定の場所 → 拠点。
+  // GPSは使わない（カレンダーから「居るはずの場所」を導く）。
   const curEv = evRows.find((e) => e.startMs! <= now && e.endMs! > now);
-  if (curEv) nowAction = { kind: "event", title: curEv.summary ?? "(予定)", untilMs: curEv.endMs! };
+  const lastDone = evRows
+    .filter((e) => e.endMs! <= now && normalizePlace(e.location))
+    .sort((a, b) => b.endMs! - a.endMs!)[0];
+  const nowTravel = travelBlocks.find((t) => t.startMs <= now && t.endMs > now);
+  let curPlace: string | null = normalizePlace(curEv?.location ?? null);
+  if (!curPlace) {
+    // 直近の予定が「今日のうち」に終わっていればそこに居るとみなす（跨いだら拠点へ戻った扱い）
+    const sameDay = lastDone && now - lastDone.endMs! < 6 * 3_600_000;
+    curPlace = sameDay ? normalizePlace(lastDone.location) : homeBase;
+  }
+  if (curPlace === ONLINE) curPlace = homeBase; // オンライン参加は居場所を変えない
+
+  // 次に場所が変わる予定と、その出発時刻
+  const nextMove = evRows
+    .filter((e) => e.startMs! > now && needsTravel(curPlace, normalizePlace(e.location)))
+    .sort((a, b) => a.startMs! - b.startMs!)[0];
+  const nextPlace = nextMove ? normalizePlace(nextMove.location) : null;
+  const moveMin = nextPlace ? lookupRoute(curPlace!, nextPlace)?.minutes ?? null : null;
+  const departBy = nextMove && moveMin ? nextMove.startMs! - moveMin * 60_000 : null;
+
+  if (nowTravel) {
+    nowAction = { kind: "travel", title: nowTravel.title, untilMs: nowTravel.endMs, note: nowTravel.note };
+  } else if (curEv) {
+    nowAction = { kind: "event", title: curEv.summary ?? "(予定)", untilMs: curEv.endMs! };
+  }
   if (!nowAction) {
     const day = new Date(now);
     day.setHours(0, 0, 0, 0);
@@ -267,5 +317,11 @@ export function buildPlan(horizonDays = 3): PlanResult {
     else nowAction = { kind: "free", title: "予定・タスクなし（自由時間）", untilMs: null };
   }
 
+  // どの分岐で決まっても現在地・次の移動を添える（UIが常に場所を出せるように）
+  if (nowAction) {
+    nowAction.place = curPlace;
+    nowAction.nextPlace = nextPlace;
+    nowAction.departBy = departBy;
+  }
   return { blocks, now: nowAction, warnings, generatedAt: now };
 }

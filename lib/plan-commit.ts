@@ -1,5 +1,6 @@
 import { and, eq, isNull, like } from "drizzle-orm";
 import { db } from "./db";
+import { listAccounts } from "./accounts";
 import { calendars, events, tasks } from "./db/schema";
 import { calendarFor } from "./google";
 import { createEvent } from "./mutations";
@@ -47,10 +48,33 @@ export async function ensurePlanCalendar(account: string): Promise<string> {
 
 /** プランブロックを確定して Google 予定にする。 */
 export async function commitPlanBlock(opts: {
-  taskKey: string; // account|tasklist|googleId
+  taskKey?: string; // account|tasklist|googleId（タスク枠のとき）
   startMs: number;
   endMs: number;
+  /** 移動枠を確定するとき（taskKey の代わり）。title は「移動: A → B」等。 */
+  travelTitle?: string;
+  note?: string;
 }): Promise<{ eventId: string; calendarId: string }> {
+  if (!(opts.endMs > opts.startMs)) throw new Error("時間帯が不正です");
+
+  // 移動枠: タスクに紐づかないので、既定アカウントのプランカレンダーへ置く
+  if (opts.travelTitle) {
+    const first = listAccounts()[0];
+    if (!first) throw new Error("アカウントがありません");
+    const calendarId = await ensurePlanCalendar(first.email);
+    const { id } = await createEvent({
+      account: first.email,
+      calendarId,
+      summary: `🚶 ${opts.travelTitle}`,
+      description: opts.note ?? "",
+      allDay: false,
+      start: new Date(opts.startMs).toISOString(),
+      end: new Date(opts.endMs).toISOString(),
+    });
+    return { eventId: id, calendarId };
+  }
+
+  if (!opts.taskKey) throw new Error("taskKey か travelTitle が要ります");
   const [account, tasklist, googleId] = opts.taskKey.split("|");
   if (!account || !tasklist || !googleId) throw new Error("taskKey が不正です");
   const t = db
@@ -59,7 +83,6 @@ export async function commitPlanBlock(opts: {
     .where(and(eq(tasks.account, account), eq(tasks.tasklist, tasklist), eq(tasks.googleId, googleId)))
     .get();
   if (!t || t.deletedAt) throw new Error("タスクが見つかりません");
-  if (!(opts.endMs > opts.startMs)) throw new Error("時間帯が不正です");
 
   const calendarId = await ensurePlanCalendar(account);
   const { id } = await createEvent({
